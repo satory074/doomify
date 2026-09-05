@@ -76,6 +76,11 @@ export interface PlaybackController {
   onAdvance(cb: (fromIndex: number) => void): () => void;
   onLeave(cb: (info: LeaveInfo) => void): () => void;
   onError(cb: (code: ControllerErrorCode, message: string) => void): () => void;
+  /** target の購読と自動送り判定のタイマーを開始する(何度呼んでも 1 回だけ有効) */
+  start(): void;
+  /** 購読・タイマー・進行中の要求を止める。start() で再開できる */
+  stop(): void;
+  /** stop + 全リスナー破棄 */
   dispose(): void;
 }
 
@@ -149,7 +154,9 @@ export function createPlaybackController(deps: ControllerDeps): PlaybackControll
   let wasPlaying = false;
   let lastObservedPos = 0;
   let ready = deps.target.deviceId !== null;
-  let disposed = false;
+  let running = false;
+  let unsubscribeTarget: (() => void) | null = null;
+  let ticker: ReturnType<typeof setInterval> | null = null;
 
   const snapshotListeners = new Set<(s: ControllerSnapshot) => void>();
   const advanceCbs = new Set<(fromIndex: number) => void>();
@@ -235,7 +242,7 @@ export function createPlaybackController(deps: ControllerDeps): PlaybackControll
     emitSnapshot();
     try {
       await deps.target.play(target.uri, startMs, controller.signal);
-      if (mySeq !== seq || disposed) return;
+      if (mySeq !== seq || !running) return;
       requesting = false;
       if (!isRetry) {
         reconcileTimer = setTimeout(() => {
@@ -248,7 +255,7 @@ export function createPlaybackController(deps: ControllerDeps): PlaybackControll
       }
       emitSnapshot();
     } catch (e) {
-      if (mySeq !== seq || disposed) return;
+      if (mySeq !== seq || !running) return;
       requesting = false;
       if (e instanceof ApiError && e.code === 'aborted') return;
       const mapped = mapPlayError(e);
@@ -258,7 +265,7 @@ export function createPlaybackController(deps: ControllerDeps): PlaybackControll
   };
 
   const onEvent = (e: TargetEvent) => {
-    if (disposed) return;
+    if (!running) return;
     switch (e.type) {
       case 'ready':
         ready = true;
@@ -282,14 +289,35 @@ export function createPlaybackController(deps: ControllerDeps): PlaybackControll
     }
   };
 
-  const unsubscribeTarget = deps.target.subscribe(onEvent);
-  const ticker = setInterval(() => {
-    if (disposed || lastState === null || lastState.paused) return;
-    checkAdvance();
-    emitSnapshot();
-  }, tickMs);
+  const start = () => {
+    if (running) return;
+    running = true;
+    unsubscribeTarget = deps.target.subscribe(onEvent);
+    ticker = setInterval(() => {
+      if (!running || lastState === null || lastState.paused) return;
+      checkAdvance();
+      emitSnapshot();
+    }, tickMs);
+  };
+
+  const stop = () => {
+    if (!running) return;
+    running = false;
+    clearTimers();
+    if (ticker !== null) {
+      clearInterval(ticker);
+      ticker = null;
+    }
+    abort?.abort();
+    abort = null;
+    unsubscribeTarget?.();
+    unsubscribeTarget = null;
+    requesting = false;
+  };
 
   return {
+    start,
+    stop,
     setActiveTrack(track, index) {
       if (track !== null && intent !== null && intent.uri === track.uri && intent.index === index) return;
       if (intent !== null) {
@@ -364,11 +392,7 @@ export function createPlaybackController(deps: ControllerDeps): PlaybackControll
     },
 
     dispose() {
-      disposed = true;
-      clearTimers();
-      clearInterval(ticker);
-      abort?.abort();
-      unsubscribeTarget();
+      stop();
       snapshotListeners.clear();
       advanceCbs.clear();
       leaveCbs.clear();

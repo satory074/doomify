@@ -58,6 +58,10 @@ function fakeTarget() {
 
 let settings: PlaybackSettings;
 let ctl: PlaybackController | null = null;
+const started = (c: PlaybackController): PlaybackController => {
+  c.start();
+  return c;
+};
 
 beforeEach(() => {
   vi.useFakeTimers();
@@ -84,7 +88,7 @@ describe('startPositionFor', () => {
 describe('setActiveTrack', () => {
   it('連続スワイプは最後の 1 曲だけ、開始位置は hook', async () => {
     const t = fakeTarget();
-    ctl = createPlaybackController({ target: t.target, settings: () => settings });
+    ctl = started(createPlaybackController({ target: t.target, settings: () => settings }));
     for (let i = 0; i < 5; i++) ctl.setActiveTrack({ uri: `spotify:track:${i}`, durationMs: 200_000 }, i);
     await vi.advanceTimersByTimeAsync(249);
     expect(t.playCalls).toHaveLength(0);
@@ -96,7 +100,7 @@ describe('setActiveTrack', () => {
 
   it('同じ曲・同じ index の再指定は無視する', async () => {
     const t = fakeTarget();
-    ctl = createPlaybackController({ target: t.target, settings: () => settings });
+    ctl = started(createPlaybackController({ target: t.target, settings: () => settings }));
     ctl.setActiveTrack(TRACK_A, 0);
     await vi.advanceTimersByTimeAsync(300);
     ctl.setActiveTrack(TRACK_A, 0);
@@ -110,7 +114,7 @@ describe('setActiveTrack', () => {
     t.setPlayImpl((call) =>
       call.uri === TRACK_A.uri ? new Promise<void>((r) => (resolveA = r)) : Promise.resolve(),
     );
-    ctl = createPlaybackController({ target: t.target, settings: () => settings });
+    ctl = started(createPlaybackController({ target: t.target, settings: () => settings }));
     ctl.setActiveTrack(TRACK_A, 0);
     await vi.advanceTimersByTimeAsync(250);
     expect(t.playCalls[0]?.signal?.aborted).toBe(false);
@@ -126,7 +130,7 @@ describe('setActiveTrack', () => {
 
   it('離れるときに onLeave で再生時間を通知する', async () => {
     const t = fakeTarget();
-    ctl = createPlaybackController({ target: t.target, settings: () => settings });
+    ctl = started(createPlaybackController({ target: t.target, settings: () => settings }));
     const leaves: { uri: string; playedMs: number }[] = [];
     ctl.onLeave((info) => leaves.push({ uri: info.intent.uri, playedMs: info.playedMs }));
     ctl.setActiveTrack(TRACK_A, 0);
@@ -143,7 +147,7 @@ describe('setActiveTrack', () => {
 describe('reconcile', () => {
   it('再生要求後 1.5 秒たっても別の曲が報告されていれば 1 回だけ再送する', async () => {
     const t = fakeTarget();
-    ctl = createPlaybackController({ target: t.target, settings: () => settings });
+    ctl = started(createPlaybackController({ target: t.target, settings: () => settings }));
     ctl.setActiveTrack(TRACK_B, 1);
     await vi.advanceTimersByTimeAsync(250);
     expect(t.playCalls).toHaveLength(1);
@@ -156,7 +160,7 @@ describe('reconcile', () => {
 
   it('期待どおりの曲が報告されていれば再送しない', async () => {
     const t = fakeTarget();
-    ctl = createPlaybackController({ target: t.target, settings: () => settings });
+    ctl = started(createPlaybackController({ target: t.target, settings: () => settings }));
     ctl.setActiveTrack(TRACK_B, 1);
     await vi.advanceTimersByTimeAsync(250);
     t.emit({ type: 'state', state: t.state({ uri: TRACK_B.uri, positionMs: 60_000 }) });
@@ -168,7 +172,7 @@ describe('reconcile', () => {
 describe('自動送り', () => {
   it('60 秒モード: 開始位置から 60 秒鳴ったら onAdvance(1 回だけ)', async () => {
     const t = fakeTarget();
-    ctl = createPlaybackController({ target: t.target, settings: () => settings });
+    ctl = started(createPlaybackController({ target: t.target, settings: () => settings }));
     const advanced: number[] = [];
     ctl.onAdvance((i) => advanced.push(i));
     ctl.setActiveTrack(TRACK_A, 3);
@@ -184,7 +188,7 @@ describe('自動送り', () => {
 
   it('一時停止中は進めない', async () => {
     const t = fakeTarget();
-    ctl = createPlaybackController({ target: t.target, settings: () => settings });
+    ctl = started(createPlaybackController({ target: t.target, settings: () => settings }));
     const advanced: number[] = [];
     ctl.onAdvance((i) => advanced.push(i));
     ctl.setActiveTrack(TRACK_A, 0);
@@ -199,7 +203,7 @@ describe('自動送り', () => {
   it('full モード: 曲の終わり(SDK が paused/position 0 に戻る)で進む', async () => {
     const t = fakeTarget();
     settings = { ...settings, advanceAfterMs: null };
-    ctl = createPlaybackController({ target: t.target, settings: () => settings });
+    ctl = started(createPlaybackController({ target: t.target, settings: () => settings }));
     const advanced: number[] = [];
     ctl.onAdvance((i) => advanced.push(i));
     ctl.setActiveTrack(TRACK_A, 0);
@@ -214,7 +218,7 @@ describe('自動送り', () => {
   it('full モード: 状態更新が来なくても補間で終端に達したら進む(Connect の疎なポーリング)', async () => {
     const t = fakeTarget();
     settings = { ...settings, advanceAfterMs: null };
-    ctl = createPlaybackController({ target: t.target, settings: () => settings });
+    ctl = started(createPlaybackController({ target: t.target, settings: () => settings }));
     const advanced: number[] = [];
     ctl.onAdvance((i) => advanced.push(i));
     ctl.setActiveTrack(TRACK_A, 0);
@@ -226,7 +230,7 @@ describe('自動送り', () => {
 
   it('別の曲の状態では進まない', async () => {
     const t = fakeTarget();
-    ctl = createPlaybackController({ target: t.target, settings: () => settings });
+    ctl = started(createPlaybackController({ target: t.target, settings: () => settings }));
     const advanced: number[] = [];
     ctl.onAdvance((i) => advanced.push(i));
     ctl.setActiveTrack(TRACK_B, 1);
@@ -243,7 +247,7 @@ describe('エラーと操作', () => {
     t.setPlayImpl(async () => {
       throw new ApiError('not_found', 404, 'Device not found', 'NO_ACTIVE_DEVICE');
     });
-    ctl = createPlaybackController({ target: t.target, settings: () => settings });
+    ctl = started(createPlaybackController({ target: t.target, settings: () => settings }));
     const errors: string[] = [];
     ctl.onError((code) => errors.push(code));
     ctl.setActiveTrack(TRACK_A, 0);
@@ -260,7 +264,7 @@ describe('エラーと操作', () => {
     t.setPlayImpl(async () => {
       throw new ApiError('aborted', 0, 'aborted');
     });
-    ctl = createPlaybackController({ target: t.target, settings: () => settings });
+    ctl = started(createPlaybackController({ target: t.target, settings: () => settings }));
     const errors: string[] = [];
     ctl.onError((code) => errors.push(code));
     ctl.setActiveTrack(TRACK_A, 0);
@@ -270,7 +274,7 @@ describe('エラーと操作', () => {
 
   it('retryCurrent は即時に再送、togglePause は状態に応じて pause/resume', async () => {
     const t = fakeTarget();
-    ctl = createPlaybackController({ target: t.target, settings: () => settings });
+    ctl = started(createPlaybackController({ target: t.target, settings: () => settings }));
     ctl.setActiveTrack(TRACK_A, 0);
     await vi.advanceTimersByTimeAsync(250);
     ctl.retryCurrent();
@@ -286,7 +290,7 @@ describe('エラーと操作', () => {
 
   it('snapshot は位置を補間する', async () => {
     const t = fakeTarget();
-    ctl = createPlaybackController({ target: t.target, settings: () => settings });
+    ctl = started(createPlaybackController({ target: t.target, settings: () => settings }));
     ctl.setActiveTrack(TRACK_A, 0);
     await vi.advanceTimersByTimeAsync(250);
     t.emit({ type: 'state', state: t.state({ uri: TRACK_A.uri, positionMs: 60_000, durationMs: 200_000 }) });

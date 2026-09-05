@@ -11,7 +11,7 @@ export function fixtureTrack(n: number | string, artistId = `a${typeof n === 'nu
     name: `Track ${n}`,
     duration_ms: 200_000,
     artists: [{ id: artistId, name: `Artist ${artistId}`, uri: `spotify:artist:${artistId}` }],
-    album: { id: al, name: `Album ${al}`, uri: `spotify:album:${al}`, images: [{ url: `https://i.scdn.co/image/${al}`, width: 640, height: 640 }] },
+    album: { id: al, name: `Album ${al}`, uri: `spotify:album:${al}`, images: [{ url: `https://picsum.photos/seed/${al}/640/640`, width: 640, height: 640 }] },
   };
 }
 
@@ -24,7 +24,7 @@ function albumRef(id: string, artistId: string, type = 'album'): AlbumRef {
     id,
     name: `Album ${id}`,
     uri: `spotify:album:${id}`,
-    images: [],
+    images: [{ url: `https://picsum.photos/seed/${id.replace(/[^a-z0-9]/gi, '')}/640/640`, width: 640, height: 640 }],
     album_type: type,
     artists: [{ id: artistId, name: `Artist ${artistId}`, uri: `spotify:artist:${artistId}` }],
   };

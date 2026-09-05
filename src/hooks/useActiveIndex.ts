@@ -8,10 +8,14 @@ export interface ActiveIndex {
   scrollToIndex: (index: number, behavior?: ScrollBehavior) => void;
 }
 
-const SCROLL_IDLE_MS = 120;
+/** scroll イベントが止まってから確定までの待ち。scrollend が発火するブラウザではそちらが先に確定する */
+const SCROLL_IDLE_MS = 150;
+/** プログラムスクロール中に scroll イベントが来なかった場合の保険 */
+const PROGRAMMATIC_TIMEOUT_MS = 1500;
 
 /** scroll-snap コンテナのアクティブカードを求める。
- *  主経路は scrollend(Safari 26.2 以降で全ブラウザ対応)、無ければ scroll のアイドル検出 */
+ *  - 確定は scrollend(対応ブラウザ)と scroll のアイドル検出の両方で行う(Chrome はプログラムスクロールで scrollend を出さない)
+ *  - プログラムからのスムーズスクロール中はスナップを一時的に外す(DOM 変化時のスナップ再整列で中断されるため) */
 export function useActiveIndex(containerRef: React.RefObject<HTMLElement | null>, count: number): ActiveIndex {
   const [active, setActive] = useState(0);
   const [pending, setPending] = useState(0);
@@ -20,32 +24,46 @@ export function useActiveIndex(containerRef: React.RefObject<HTMLElement | null>
   useEffect(() => {
     countRef.current = count;
   }, [count]);
+  const programmaticRef = useRef<{ restore: () => void; timer: ReturnType<typeof setTimeout> } | null>(null);
+
+  const finishProgrammatic = useCallback(() => {
+    const p = programmaticRef.current;
+    if (p === null) return;
+    clearTimeout(p.timer);
+    p.restore();
+    programmaticRef.current = null;
+  }, []);
 
   const commit = useCallback(() => {
     const el = containerRef.current;
     if (el === null) return;
+    finishProgrammatic();
     const next = indexFromScroll(el.scrollTop, el.clientHeight, countRef.current);
     if (next !== activeRef.current) {
       activeRef.current = next;
       setActive(next);
     }
     setPending(next);
-  }, [containerRef]);
+  }, [containerRef, finishProgrammatic]);
 
   useEffect(() => {
     const el = containerRef.current;
     if (el === null) return;
-    const supportsScrollEnd = 'onscrollend' in window;
-    let idleTimer: ReturnType<typeof setTimeout> | null = null;
-
+    let idle: ReturnType<typeof setTimeout> | null = null;
     const onScroll = () => {
       setPending(indexFromScroll(el.scrollTop, el.clientHeight, countRef.current));
-      if (supportsScrollEnd) return;
-      if (idleTimer !== null) clearTimeout(idleTimer);
-      idleTimer = setTimeout(commit, SCROLL_IDLE_MS);
+      if (idle !== null) clearTimeout(idle);
+      idle = setTimeout(commit, SCROLL_IDLE_MS);
+    };
+    const onScrollEnd = () => {
+      if (idle !== null) {
+        clearTimeout(idle);
+        idle = null;
+      }
+      commit();
     };
     el.addEventListener('scroll', onScroll, { passive: true });
-    if (supportsScrollEnd) el.addEventListener('scrollend', commit);
+    el.addEventListener('scrollend', onScrollEnd);
 
     // 回転・ツールバー変化で高さが変わったら、アクティブカードの位置へ即時に揃え直す
     const ro = new ResizeObserver(() => {
@@ -55,22 +73,35 @@ export function useActiveIndex(containerRef: React.RefObject<HTMLElement | null>
 
     return () => {
       el.removeEventListener('scroll', onScroll);
-      if (supportsScrollEnd) el.removeEventListener('scrollend', commit);
-      if (idleTimer !== null) clearTimeout(idleTimer);
+      el.removeEventListener('scrollend', onScrollEnd);
+      if (idle !== null) clearTimeout(idle);
       ro.disconnect();
+      finishProgrammatic();
     };
-  }, [containerRef, commit]);
+  }, [containerRef, commit, finishProgrammatic]);
 
   const scrollToIndex = useCallback(
     (index: number, behavior: ScrollBehavior = 'smooth') => {
       const el = containerRef.current;
       if (el === null) return;
       const reduced = typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
-      el.scrollTo({ top: offsetForIndex(index, el.clientHeight), behavior: reduced ? 'instant' : behavior });
-      // scrollend が無いブラウザでも確実に確定させる
-      if (!('onscrollend' in window)) setTimeout(commit, behavior === 'smooth' ? 600 : 50);
+      const top = offsetForIndex(index, el.clientHeight);
+      if (Math.abs(el.scrollTop - top) < 1) {
+        commit();
+        return;
+      }
+      finishProgrammatic();
+      const effective: ScrollBehavior = reduced ? 'instant' : behavior;
+      el.style.scrollSnapType = 'none';
+      programmaticRef.current = {
+        restore: () => {
+          el.style.scrollSnapType = '';
+        },
+        timer: setTimeout(commit, effective === 'smooth' ? PROGRAMMATIC_TIMEOUT_MS : 200),
+      };
+      el.scrollTo({ top, behavior: effective });
     },
-    [containerRef, commit],
+    [containerRef, commit, finishProgrammatic],
   );
 
   return { active, pending, scrollToIndex };

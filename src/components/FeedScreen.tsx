@@ -123,6 +123,15 @@ export function FeedScreen({ services, settings, updateSettings, authStatus, onL
   const playback = usePlayback(services, settings, playbackSettingsStore, callbacks);
   const { controller, target, snapshot } = playback;
 
+  // 開発時のみ: ブラウザのコンソールから移動を試せるようにする(自動テスト用)
+  useEffect(() => {
+    if (!import.meta.env.DEV) return;
+    window.__doomify = { goTo, scrollToIndex, snapshot: () => controller.snapshot() };
+    return () => {
+      delete window.__doomify;
+    };
+  }, [goTo, scrollToIndex, controller]);
+
   // アクティブカードが変わったら再生意図を更新し、先読み補充する
   useEffect(() => {
     const item = items[active];

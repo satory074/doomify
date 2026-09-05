@@ -88,6 +88,7 @@ export function createConnectTarget(deps: ConnectTargetDeps): PlaybackTarget {
     deviceId: deps.deviceId,
 
     async init() {
+      disposed = false;
       await poll();
     },
 

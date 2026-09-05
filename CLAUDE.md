@@ -19,6 +19,9 @@ npm run preview  # PWA/SW の動作確認
 
 `.env` の `VITE_SPOTIFY_CLIENT_ID` が空だとログイン画面に設定案内が出る(PKCE なので公開値。シークレット無し)。
 
+`http://127.0.0.1:5173/doomify/?demo=1` でログイン無しのデモモード(`src/demo.ts`: 偽 API + 疑似再生。音は出ない)。
+開発ビルドでは `window.__doomify.goTo(i)` / `scrollToIndex(i, 'instant')` / `snapshot()` で移動と再生状態を確認できる。
+
 ## Architecture
 
 - **`src/core/`** — React 非依存の純 TS。全モジュールに `*.test.ts` を併設。外部(fetch / crypto / now / rng / storage)は注入
@@ -54,6 +57,11 @@ npm run preview  # PWA/SW の動作確認
 - Spotify の `artist.genres` は deprecated → 無い前提(`feed/genres.ts` の静的語彙 + 設定で選択)
 - refresh 応答に `refresh_token` が無いことがある → 旧値を維持(`tokensFromResponse`)
 - iOS で SDK が `autoplay_failed` → ゲートを再表示。2 回連続失敗で Connect を提案(`SUGGEST_CONNECT_AFTER`)
+- Dark Reader 拡張が背景を `#181a1b` に塗り替えてカバー由来の配色を壊す → `index.html` の `darkreader-lock` メタで無効化(消さない)
+- プログラムからのスムーズスクロールは、スナップ再整列と DOM 変化で中断される → `useActiveIndex.scrollToIndex` はスナップを一時的に外す。
+  描画窓は active 基準のみ(pending で DOM を変えない)。Chrome はプログラムスクロールで `scrollend` を出さないので scroll アイドルでも確定する
+- controller/target は `useMemo` で純粋に生成し、effect で `start()`/`stop()`(StrictMode の二重 effect で `dispose()` すると死ぬ)
+- 自動化ブラウザのタブが非表示だと rAF が止まりスムーズスクロールが動かない(`document.visibilityState` を確認)
 
 ## Deploy
 

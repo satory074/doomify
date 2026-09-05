@@ -2,6 +2,7 @@ import { FeedScreen } from './components/FeedScreen';
 import { LoginScreen } from './components/LoginScreen';
 import { useAuth } from './hooks/useAuth';
 import { useSettings } from './hooks/useSettings';
+import { isDemo } from './demo';
 import { getServices } from './services';
 
 export default function App() {
@@ -9,6 +10,9 @@ export default function App() {
   const { state, login, logout } = useAuth(services.auth);
   const [settings, updateSettings] = useSettings();
 
+  if (isDemo()) {
+    return <FeedScreen services={services} settings={settings} updateSettings={updateSettings} authStatus="ok" onLogout={() => {}} />;
+  }
   if (state.kind === 'booting') {
     return (
       <main className="login" aria-busy="true">

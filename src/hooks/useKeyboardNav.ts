@@ -12,8 +12,8 @@ export function useKeyboardNav(handlers: KeyHandlers, enabled: boolean): void {
   useEffect(() => {
     if (!enabled) return;
     const onKey = (e: KeyboardEvent) => {
-      const t = e.target as HTMLElement | null;
-      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.closest('dialog'))) return;
+      const t = e.target instanceof Element ? e.target : null;
+      if (t !== null && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.closest('dialog') !== null)) return;
       switch (e.key) {
         case 'ArrowDown':
         case 'PageDown':

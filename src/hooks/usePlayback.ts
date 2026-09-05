@@ -84,6 +84,7 @@ export function usePlayback(
 
   const { playbackTarget, connectDeviceId, connectDeviceName } = settings;
   const target = useMemo<PlaybackTarget>(() => {
+    if (services.demoTarget !== undefined) return services.demoTarget;
     if (playbackTarget === 'connect' && connectDeviceId !== null) {
       return createConnectTarget({
         player: services.api.player,
@@ -135,12 +136,14 @@ export function usePlayback(
         }
       }),
     ];
+    controller.start();
     target.init().catch((e: unknown) => update((s) => ({ ...s, initError: e instanceof Error ? e.message : String(e) })));
 
     return () => {
       alive = false;
       for (const u of unsubs) u();
-      controller.dispose();
+      // StrictMode の擬似アンマウントでも再開できるよう stop に留める(dispose はしない)
+      controller.stop();
       target.dispose();
     };
   }, [controller, target]);

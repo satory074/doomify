@@ -9,6 +9,13 @@ export type AuthUiState =
 /** StrictMode の二重実行や再マウントでコールバック処理を 2 回走らせない */
 let redirectHandled: Promise<string | null> | null = null;
 
+/** code / state / error だけを URL から消す(他のクエリは残す) */
+function stripAuthParams(): void {
+  const url = new URL(window.location.href);
+  for (const k of ['code', 'state', 'error']) url.searchParams.delete(k);
+  window.history.replaceState(null, '', url.pathname + (url.search === '' ? '' : url.search));
+}
+
 function describeAuthError(e: unknown): string {
   if (e instanceof AuthError) {
     switch (e.code) {
@@ -42,13 +49,11 @@ export function useAuth(auth: AuthManager): { state: AuthUiState; login: () => P
       redirectHandled = auth
         .handleRedirect(window.location.search)
         .then((outcome) => {
-          if (outcome === 'exchanged' || window.location.search !== '') {
-            window.history.replaceState(null, '', window.location.pathname);
-          }
+          if (outcome === 'exchanged') stripAuthParams();
           return null;
         })
         .catch((e: unknown) => {
-          window.history.replaceState(null, '', window.location.pathname);
+          stripAuthParams();
           return describeAuthError(e);
         });
     }

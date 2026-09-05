@@ -4,7 +4,9 @@ import { CLIENT_ID, redirectUri, SCOPE_STRING } from './core/config';
 import { createHistory, type History } from './core/feed/history';
 import { createApiClient, type ApiClient } from './core/spotify/apiClient';
 import { createIdbStore, type KeyValueStore } from './core/spotify/cache';
+import type { PlaybackTarget } from './core/playback/types';
 import { createSpotifyApi, type SpotifyApi } from './core/spotify/endpoints';
+import { createDemoServices, isDemo } from './demo';
 
 export interface Services {
   auth: AuthManager;
@@ -13,12 +15,18 @@ export interface Services {
   store: KeyValueStore;
   history: History;
   redirectUri: string;
+  /** デモモードのときだけ。usePlayback がこれを使う */
+  demoTarget?: PlaybackTarget;
 }
 
 let services: Services | null = null;
 
 export function getServices(): Services {
   if (services !== null) return services;
+  if (isDemo()) {
+    services = createDemoServices();
+    return services;
+  }
   const uri = redirectUri(window.location.origin, import.meta.env.BASE_URL);
   const auth = createAuthManager({
     clientId: CLIENT_ID,

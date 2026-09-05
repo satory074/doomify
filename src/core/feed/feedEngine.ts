@@ -1,4 +1,6 @@
 /** フィードエンジン。種(ユーザーのデータ) → 候補プール(3 バケット) → 重み付き抽選 → items(追記専用)。
+ *  - 種は届いた順に合流し(startSeeds)、曲を含む最初の 1 本で bootstrap が解決する。残りは裏で合流
+ *  - items が空のときは拡張(API)の応答を待たずにプールから先に出す(最初のカードを最初の 1 レスポンスで)
  *  - ensureAhead(i) で残りが少なければ補充する。1 回の補充で使う API 呼び出しは予算内
  *  - レート制限中は API を呼ばず、既知プールだけで供給してスクロールを止めない
  *  - 重複(ID と正規化タイトル)・30 日以内に見た曲・同一アーティストの連続を避ける */
@@ -8,7 +10,7 @@ import { appearsOn, deepCut, genreSearch, tagHipster, tagNew, type ExpandContext
 import type { History } from './history';
 import { mathRandom, pickOne, pickWeighted, randomInt, shuffle, type Rng } from './rng';
 import { bucketWeights, dedupeKey, planRefill, STRATEGY_COST, violatesArtistSpacing, type Strategy } from './scheduler';
-import { loadSeeds, playlistRandomPage, savedRandomPage, type Candidate, type SeedArtist, type Seeds } from './sources';
+import { playlistRandomPage, savedRandomPage, startSeeds, type Candidate, type SeedArtist, type Seeds } from './sources';
 import { BUCKET_OF, type Bucket, type FeedItem } from './types';
 
 export interface FeedSettings {
@@ -34,6 +36,8 @@ export interface FeedConstants {
   maxRoundsPerRefill: number;
   /** 隣接アーティストプールの上限 */
   maxArtists: number;
+  /** items が空のとき、拡張の応答を待たずにプールから先に出す枚数 */
+  initialDraw: number;
 }
 
 export const FEED_CONSTANTS: FeedConstants = {
@@ -44,13 +48,16 @@ export const FEED_CONSTANTS: FeedConstants = {
   maxItems: 500,
   maxRoundsPerRefill: 2,
   maxArtists: 300,
+  initialDraw: 6,
 };
 
 export interface FeedStatus {
+  /** 補充中(ユーザーがカードを待っている可能性がある) */
   loading: boolean;
   error: string | null;
   /** 補充しても何も増えなかった */
   exhausted: boolean;
+  /** 種の全ソースが確定した(stale の裏再取得も含む) */
   seedsLoaded: boolean;
   /** 種の取得に失敗した数 */
   seedFailures: number;
@@ -62,7 +69,10 @@ export interface FeedEngine {
   items(): readonly FeedItem[];
   itemById(id: string): FeedItem | undefined;
   status(): FeedStatus;
+  /** 最初の種(曲を含むソース 1 つ)が使えるまで待つ。残りの種は裏で合流する */
   bootstrap(): Promise<void>;
+  /** 全ソースの取得(stale の再取得を含む)が終わるまで待つ。テスト・診断用 */
+  seedsSettled(): Promise<void>;
   ensureAhead(activeIndex: number): Promise<void>;
   markPlayed(id: string): void;
   markSkipped(id: string): void;
@@ -100,7 +110,9 @@ export function createFeedEngine(deps: FeedEngineDeps): FeedEngine {
   const usedIds = new Set<string>();
   const usedKeys = new Set<string>();
   let seeds: Seeds | null = null;
-  let seedsPromise: Promise<void> | null = null;
+  /** 一度立てたら null に戻さない(二重起動ガード) */
+  let seedsFirst: Promise<void> | null = null;
+  let seedsDone: Promise<void> | null = null;
   let artists: SeedArtist[] = [];
   let recentStrategies: Strategy[] = [];
   let refilling: Promise<void> | null = null;
@@ -137,12 +149,18 @@ export function createFeedEngine(deps: FeedEngineDeps): FeedEngine {
     }
   };
 
+  /** 既知 id は重みを max で更新、未知はコピーを追加(種の集約は更新のたびに作り直されるので、その重みを引き写す) */
   const mergeArtists = (found: readonly SeedArtist[]) => {
-    const known = new Set(artists.map((a) => a.id));
+    const known = new Map(artists.map((a) => [a.id, a] as const));
     for (const a of found) {
-      if (known.has(a.id)) continue;
-      known.add(a.id);
-      artists.push(a);
+      const cur = known.get(a.id);
+      if (cur === undefined) {
+        const copy = { ...a };
+        known.set(a.id, copy);
+        artists.push(copy);
+      } else {
+        cur.weight = Math.max(cur.weight, a.weight);
+      }
     }
     if (artists.length > C.maxArtists) {
       artists.sort((a, b) => b.weight - a.weight);
@@ -154,30 +172,32 @@ export function createFeedEngine(deps: FeedEngineDeps): FeedEngine {
     ctx.preferredGenres = [...new Set([...deps.settings().genres, ...(seeds?.genres ?? [])])];
   };
 
-  const bootstrap = async (): Promise<void> => {
-    if (seeds !== null) return;
-    if (seedsPromise !== null) return seedsPromise;
-    setStatus({ loading: true });
-    emit();
-    seedsPromise = (async () => {
-      try {
-        const loaded = await loadSeeds({ api: deps.api, store: deps.store, now });
-        seeds = loaded;
-        artists = loaded.artists.slice();
-        refreshPreferredGenres();
-        addToPool(shuffle(rng, loaded.known));
-        setStatus({
-          seedsLoaded: true,
-          seedFailures: loaded.failures,
-          error: loaded.known.length === 0 && loaded.failures > 0 ? 'Spotify からデータを取得できませんでした' : null,
-        });
-      } finally {
-        seedsPromise = null;
-        setStatus({ loading: false });
-        emit();
-      }
-    })();
-    return seedsPromise;
+  /** 種の集約が更新されるたびに呼ばれる(部分・最終・stale の再取得すべて同じ経路) */
+  const applySeeds = (loaded: Seeds, final: boolean) => {
+    seeds = loaded;
+    mergeArtists(loaded.artists);
+    refreshPreferredGenres();
+    addToPool(shuffle(rng, loaded.known));
+    setStatus({ seedFailures: loaded.failures });
+    if (final) {
+      setStatus({
+        seedsLoaded: true,
+        error: loaded.known.length === 0 && loaded.failures > 0 ? 'Spotify からデータを取得できませんでした' : status.error,
+      });
+    }
+  };
+
+  const bootstrap = (): Promise<void> => {
+    if (seedsFirst !== null) return seedsFirst;
+    const load = startSeeds({ api: deps.api, store: deps.store, now }, { onUpdate: applySeeds });
+    seedsDone = load.done.then(() => emit());
+    seedsFirst = load.first.then(() => emit());
+    return seedsFirst;
+  };
+
+  const seedsSettled = async (): Promise<void> => {
+    await bootstrap();
+    if (seedsDone !== null) await seedsDone;
   };
 
   const availability = (): Record<Strategy, boolean> => ({
@@ -247,6 +267,16 @@ export function createFeedEngine(deps: FeedEngineDeps): FeedEngine {
     return out;
   };
 
+  /** 抽選して items に追記し、増えたら通知する。増えた枚数を返す(ゼロコール) */
+  const appendDrawn = (count: number): number => {
+    const drawn = draw(count);
+    if (drawn.length === 0) return 0;
+    items = items.concat(drawn);
+    for (const it of drawn) byId.set(it.id, it);
+    emit();
+    return drawn.length;
+  };
+
   const poolSizes = (): Record<Bucket, number> => ({
     known: pools.known.length,
     adjacent: pools.adjacent.length,
@@ -263,6 +293,8 @@ export function createFeedEngine(deps: FeedEngineDeps): FeedEngine {
         refreshPreferredGenres();
         let added = 0;
         let budget = C.budgetPerRefill;
+        // 最初のカードを拡張の応答で待たせない: items が空なら、いまプールにある分から先に出す
+        if (items.length === 0) added += appendDrawn(Math.min(C.initialDraw, C.maxItems));
         for (let round = 0; round < C.maxRoundsPerRefill; round++) {
           const room = C.maxItems - items.length;
           const need = Math.min(room, C.refillTarget - added);
@@ -287,14 +319,9 @@ export function createFeedEngine(deps: FeedEngineDeps): FeedEngine {
               mergeArtists(r.value.newArtists);
             }
           }
-          const drawn = draw(need);
-          if (drawn.length > 0) {
-            items = items.concat(drawn);
-            for (const it of drawn) byId.set(it.id, it);
-            added += drawn.length;
-            emit();
-          }
-          if (plan.length === 0 && drawn.length === 0) break;
+          const drawn = appendDrawn(need);
+          added += drawn;
+          if (plan.length === 0 && drawn === 0) break;
         }
         setStatus({ exhausted: added === 0 && items.length < C.maxItems, full: items.length >= C.maxItems });
       } catch (e) {
@@ -328,6 +355,7 @@ export function createFeedEngine(deps: FeedEngineDeps): FeedEngine {
     itemById: (id) => byId.get(id),
     status: () => status,
     bootstrap,
+    seedsSettled,
 
     async ensureAhead(activeIndex) {
       if (items.length >= C.maxItems) {

@@ -27,6 +27,9 @@ export function useFeed(
       setItems(nextItems);
       setStatus(nextStatus);
     });
+    // 種の取得(IDB 読み + 最初のネットワーク要求)は履歴のロードを待たずに始める。
+    // 抽選は履歴ロード後に行い、draw() が履歴を再判定するので見た曲は出ない
+    void engine.bootstrap();
     void services.history.load().then(() => engine.ensureAhead(0));
     return unsubscribe;
   }, [engine, services.history]);

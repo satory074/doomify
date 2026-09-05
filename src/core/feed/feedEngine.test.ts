@@ -1,13 +1,19 @@
-import { describe, expect, it } from 'vitest';
-import { MemoryStore } from '../spotify/cache';
+import { describe, expect, it, vi } from 'vitest';
+import { getEntry, MemoryStore } from '../spotify/cache';
 import { createFeedEngine, FEED_CONSTANTS, type FeedEngine, type FeedSettings } from './feedEngine';
 import { createHistory, type History } from './history';
 import { mulberry32 } from './rng';
 import { dedupeKey } from './scheduler';
+import { loadSeeds, SEED_SOURCE_COUNT, seedCacheKey } from './sources';
 import { createFakeApi } from './testApi';
 
-function setup(opts: { discovery?: number; rateLimited?: boolean; seed?: number; maxItems?: number; history?: History } = {}) {
-  const { api, calls } = createFakeApi();
+const NOW = 1_700_000_000_000;
+const HOUR = 3_600_000;
+
+function setup(
+  opts: { discovery?: number; rateLimited?: boolean; seed?: number; maxItems?: number; history?: History; delay?: (call: string) => number } = {},
+) {
+  const { api, calls } = createFakeApi({}, { delay: opts.delay });
   const store = new MemoryStore();
   const history = opts.history ?? createHistory(new MemoryStore());
   const settings: FeedSettings = { discovery: opts.discovery ?? 0.5, genres: ['j-pop'] };
@@ -17,14 +23,12 @@ function setup(opts: { discovery?: number; rateLimited?: boolean; seed?: number;
     history,
     settings: () => settings,
     rng: mulberry32(opts.seed ?? 1),
-    now: () => 1_700_000_000_000,
+    now: () => NOW,
     isRateLimited: () => opts.rateLimited ?? false,
     constants: opts.maxItems !== undefined ? { maxItems: opts.maxItems } : undefined,
   });
   return { engine, calls, history, store, api };
 }
-
-const BOOTSTRAP_CALLS = 9;
 
 function assertWellFormed(engine: FeedEngine) {
   const items = engine.items();
@@ -47,7 +51,8 @@ describe('bootstrap', () => {
   it('種の取得は 9 コール以内、2 回目はキャッシュで 0 コール', async () => {
     const { engine, calls, store } = setup();
     await engine.bootstrap();
-    expect(calls.length).toBeLessThanOrEqual(BOOTSTRAP_CALLS);
+    await engine.seedsSettled();
+    expect(calls.length).toBeLessThanOrEqual(SEED_SOURCE_COUNT);
     expect(engine.status().seedsLoaded).toBe(true);
 
     const { api: api2, calls: calls2 } = createFakeApi();
@@ -56,10 +61,70 @@ describe('bootstrap', () => {
       store,
       history: createHistory(new MemoryStore()),
       settings: () => ({ discovery: 0.5, genres: [] }),
-      now: () => 1_700_000_000_000,
+      now: () => NOW,
     });
-    await engine2.bootstrap();
+    await engine2.seedsSettled();
     expect(calls2).toHaveLength(0);
+    expect(engine2.status().seedsLoaded).toBe(true);
+  });
+
+  it('bootstrap は曲を含む最初の種で解決し、残りは裏で合流する', async () => {
+    vi.useFakeTimers();
+    try {
+      const { engine, calls } = setup({ discovery: 0, delay: (c) => (c === 'topTracks:short_term' ? 10 : 200) });
+      const got = { booted: false };
+      void engine.bootstrap().then(() => {
+        got.booted = true;
+      });
+      await vi.advanceTimersByTimeAsync(20);
+      expect(got.booted).toBe(true);
+      expect(engine.status().seedsLoaded).toBe(false);
+      await vi.advanceTimersByTimeAsync(300);
+      expect(engine.status().seedsLoaded).toBe(true);
+      expect(calls).toHaveLength(SEED_SOURCE_COUNT);
+
+      const p = engine.ensureAhead(0);
+      await vi.advanceTimersByTimeAsync(1000);
+      await p;
+      const reasons = new Set(engine.items().map((i) => i.reason));
+      expect(reasons.has('saved') || reasons.has('recent')).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('期限切れの種でも最初のカードはゼロコールで出て、裏で再取得する', async () => {
+    vi.useFakeTimers();
+    try {
+      const store = new MemoryStore();
+      // 3 時間前の取得: top / following / me は fresh、saved / playlists / recent は期限切れ(24h 以内の stale)
+      await loadSeeds({ api: createFakeApi().api, store, now: () => NOW - 3 * HOUR });
+      const { api, calls } = createFakeApi({}, { delay: () => 500 });
+      const engine = createFeedEngine({
+        api,
+        store,
+        history: createHistory(new MemoryStore()),
+        settings: () => ({ discovery: 0.5, genres: [] }),
+        rng: mulberry32(3),
+        now: () => NOW,
+      });
+      const p = engine.ensureAhead(0);
+      await vi.advanceTimersByTimeAsync(5);
+      expect(engine.items().length).toBeGreaterThanOrEqual(1);
+      expect(calls).toContain('savedTracks:0');
+      expect(calls).toContain('myPlaylists');
+      expect(calls).toContain('recentlyPlayed');
+      expect(calls.some((c) => c.startsWith('topTracks') || c === 'topArtists' || c === 'followedArtists' || c === 'me')).toBe(false);
+
+      await vi.advanceTimersByTimeAsync(3000);
+      await p;
+      await engine.seedsSettled();
+      expect(engine.status().seedsLoaded).toBe(true);
+      expect(calls.length - 3).toBeLessThanOrEqual(FEED_CONSTANTS.budgetPerRefill);
+      expect((await getEntry(store, seedCacheKey('recent'), NOW))?.fresh).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
@@ -68,9 +133,32 @@ describe('ensureAhead', () => {
     const { engine, calls } = setup();
     await engine.ensureAhead(0);
     expect(engine.items().length).toBeGreaterThanOrEqual(FEED_CONSTANTS.refillTarget);
-    expect(calls.length - BOOTSTRAP_CALLS).toBeLessThanOrEqual(FEED_CONSTANTS.budgetPerRefill);
+    expect(calls.length - SEED_SOURCE_COUNT).toBeLessThanOrEqual(FEED_CONSTANTS.budgetPerRefill);
     assertWellFormed(engine);
     expect(engine.items().every((i) => i.reason !== undefined && i.bucket !== undefined)).toBe(true);
+  });
+
+  it('最初の補充は拡張の応答を待たずに数枚出し、その後 20 枚まで埋める', async () => {
+    vi.useFakeTimers();
+    try {
+      const { engine, calls } = setup({ delay: (c) => (/^(artistAlbums|album|search)/.test(c) ? 500 : 0) });
+      const p = engine.ensureAhead(0);
+      await vi.advanceTimersByTimeAsync(5);
+      const early = engine.items();
+      expect(early.length).toBeGreaterThanOrEqual(1);
+      expect(early.length).toBeLessThanOrEqual(FEED_CONSTANTS.initialDraw);
+      expect(early.every((i) => i.bucket === 'known')).toBe(true);
+      expect(engine.status().loading).toBe(true);
+
+      await vi.advanceTimersByTimeAsync(3000);
+      await p;
+      expect(engine.status().loading).toBe(false);
+      expect(engine.items().length).toBeGreaterThanOrEqual(FEED_CONSTANTS.refillTarget);
+      expect(calls.length - SEED_SOURCE_COUNT).toBeLessThanOrEqual(FEED_CONSTANTS.budgetPerRefill);
+      assertWellFormed(engine);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('残りが十分なら補充しない', async () => {
@@ -102,6 +190,7 @@ describe('ensureAhead', () => {
   it('レート制限中は API を呼ばず、種の既知プールから供給する', async () => {
     const { engine, calls } = setup({ rateLimited: true });
     await engine.bootstrap();
+    await engine.seedsSettled();
     const before = calls.length;
     await engine.ensureAhead(0);
     expect(calls.length).toBe(before);
@@ -110,7 +199,7 @@ describe('ensureAhead', () => {
 
   it('履歴にある曲は出さない', async () => {
     const history = createHistory(new MemoryStore());
-    for (let i = 0; i < 20; i++) history.record(`t${1000 + i}`, 'played', [], 1_700_000_000_000);
+    for (let i = 0; i < 20; i++) history.record(`t${1000 + i}`, 'played', [], NOW);
     const { engine } = setup({ history, discovery: 0 });
     await engine.ensureAhead(0);
     expect(engine.items().some((i) => i.id.startsWith('t100') || i.id.startsWith('t101'))).toBe(false);

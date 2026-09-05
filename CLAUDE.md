@@ -19,7 +19,7 @@ npm run preview  # PWA/SW の動作確認
 
 `.env` の `VITE_SPOTIFY_CLIENT_ID` が空だとログイン画面に設定案内が出る(PKCE なので公開値。シークレット無し)。
 
-`http://127.0.0.1:5173/doomify/?demo=1` でログイン無しのデモモード(`src/demo.ts`: 偽 API + 疑似再生。音は出ない)。
+`http://127.0.0.1:5173/doomify/?demo=1` でログイン無しのデモモード(`src/demo.ts`: 偽 API + 疑似再生。音は出ない)。`&delay=1500` を足すと偽 API の応答が遅れ、スケルトン → 最初のカード → 裏の補充の順序を目で確かめられる。
 開発ビルドでは `window.__doomify.goTo(i)` / `scrollToIndex(i, 'instant')` / `snapshot()` で移動と再生状態を確認できる。
 
 ## Architecture
@@ -27,8 +27,8 @@ npm run preview  # PWA/SW の動作確認
 - **`src/core/`** — React 非依存の純 TS。全モジュールに `*.test.ts` を併設。外部(fetch / crypto / now / rng / storage)は注入
   - `auth/` PKCE(`pkce.ts`)、トークン永続化(`tokenStore.ts`)、`authManager.ts`(single-flight refresh、6 か月失効の予告、`invalid_grant` → 再ログイン)
   - `spotify/` `apiClient.ts`(優先度キュー playback>action>feed、同時 2・間隔 150ms、429 共通ゲート、401 強制更新 1 回、GET 短命キャッシュ)、
-    `endpoints.ts`(2026-02 以降の開発モードで使えるエンドポイントだけ。**search / artistAlbums の limit 上限は 10**)、`types.ts`、`cache.ts`(idb-keyval + TTL ≤24h)
-  - `feed/` `feedEngine.ts`(種 → 3 バケットの候補プール → 重み付き抽選 → items 追記専用)、`sources.ts`(種: top/saved/recent/following/playlists、IDB キャッシュ)、
+    `endpoints.ts`(2026-02 以降の開発モードで使えるエンドポイントだけ。**search / artistAlbums の limit 上限は 10**)、`types.ts`、`cache.ts`(idb-keyval + TTL ≤24h。`getEntry` は期限切れでも 24h 以内なら stale として返す)
+  - `feed/` `feedEngine.ts`(種 → 3 バケットの候補プール → 重み付き抽選 → items 追記専用)、`sources.ts`(種: top/saved/recent/following/playlists。`startSeeds` で届いた順に集約へ合流、IDB キャッシュは期限切れでも 24h 以内なら stale で先に使い裏で再取得)、
     `expanders.ts`(deep_cut / appears_on / genre_search / tag_new / tag_hipster)、`scheduler.ts`(予算内の補充計画・重複キー・アーティスト間隔)、`history.ts`(seen 30 日・親和度)
   - `playback/` `controller.ts`(意図の集約: デバウンス 250ms、abort+seq、URI 照合の 1 回再送、自動送り判定、位置補間)、
     `sdkTarget.ts`(Web Playback SDK。`activate()` はタップ内で同期に)、`connectTarget.ts`(遠隔。可視中 10 秒ポーリング)
@@ -42,6 +42,8 @@ npm run preview  # PWA/SW の動作確認
 ## 設計上の約束
 
 - **API 呼び出しは予算制**: 補充 1 回 ≤6 コール(`FEED_CONSTANTS.budgetPerRefill`)。レート制限中は known バケットのみ(ゼロコール)。ポーリングは Connect モードだけ
+- **最初のカードは種 1 ソースで出す**: `bootstrap()` は曲を含む最初の種で解決し、items が空なら拡張(API)の応答を待たずにプールから `initialDraw` 枚を先に出す。
+  残りの種・拡張は裏で合流(`seedsSettled()` で全確定を待てる)。種を待つ間は実カードと同寸のスケルトン(`Feed.tsx`)
 - **再生要求は controller だけが出す**。カード切替 → `setActiveTrack` → デバウンス → `target.play`。UI から直接 `api.player.play` を呼ばない
 - **自動再生制限**: 音を出す前に必ずユーザーのタップ(`TapToStartGate`)。`target.activate()` は await の前に同期で呼ぶ
 - **document はスクロールさせない**(`.feed` が fixed の唯一のスクローラ)。`100vh/100dvh` は使わず `height:100%`

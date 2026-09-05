@@ -259,6 +259,72 @@
   font-weight: 600;
 }
 
+/* 最初の種を待つ間のスケルトン。実カードと同じ寸法にしてレイアウトシフトを避ける(中身は出さない中立の形だけ) */
+.card-skeleton {
+  background: var(--ground);
+}
+
+.skeleton-art {
+  width: min(72vw, 40vh, 440px);
+  aspect-ratio: 1;
+  border-radius: var(--radius-art);
+  background: linear-gradient(135deg, var(--surface), var(--surface-2));
+  box-shadow: 0 26px 60px rgba(0, 0, 0, 0.35);
+  transform: scale(0.97);
+}
+
+.skeleton-line {
+  display: block;
+  height: 14px;
+  border-radius: 7px;
+  background: var(--surface-2);
+}
+
+.skeleton-reason {
+  width: 40%;
+  height: 12px;
+  margin-bottom: 8px;
+}
+
+.skeleton-title {
+  width: 78%;
+  height: 26px;
+  margin-bottom: 8px;
+}
+
+.skeleton-artist {
+  width: 55%;
+  height: 16px;
+  margin-bottom: 6px;
+}
+
+.skeleton-album {
+  width: 62%;
+  height: 12px;
+}
+
+.skeleton-caption {
+  margin: 22px 0 0;
+  font-family: var(--font-serif);
+  font-size: 14px;
+  color: var(--ink-3);
+}
+
+.skeleton-art,
+.skeleton-line {
+  animation: shimmer 1.6s ease-in-out infinite;
+}
+
+@keyframes shimmer {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.5;
+  }
+}
+
 /* 上部バー: フィードの上に浮く */
 .topbar {
   position: fixed;

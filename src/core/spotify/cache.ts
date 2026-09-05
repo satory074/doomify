@@ -1,7 +1,8 @@
 /** キャッシュ層。
  *  - SyncTtlCache: ApiClient 内の短命メモリキャッシュ(同期)
  *  - KeyValueStore: フィードのプール・履歴の永続化(IndexedDB。テストは MemoryStore)
- *  Spotify コンテンツの長期保存はポリシーで禁止されているため、TTL は最長 24 時間に制限する */
+ *  - getEntry: 期限切れでも保存から 24h 以内なら stale として返す(stale-while-revalidate 用)
+ *  Spotify コンテンツの長期保存はポリシーで禁止されているため、TTL も stale の猶予も最長 24 時間に制限する */
 import { createStore, del, get, keys, set, type UseStore } from 'idb-keyval';
 
 export const MAX_TTL_MS = 24 * 60 * 60 * 1000;
@@ -76,16 +77,38 @@ export function createIdbStore(dbName = 'doomify', storeName = 'kv'): KeyValueSt
 interface TtlEntry<T> {
   value: T;
   expiresAt: number;
+  /** 保存時刻。無い旧エントリは期限内のときだけ使う */
+  storedAt?: number;
+}
+
+export interface CacheHit<T> {
+  value: T;
+  /** expiresAt を過ぎていない */
+  fresh: boolean;
+  /** 保存からの経過 ms(storedAt が無ければ 0) */
+  ageMs: number;
+}
+
+/** TTL 付きエントリを読む。期限切れでも保存から maxAgeMs(既定・上限 24h)以内なら stale として返す。
+ *  読み出しでは削除しない(setWithTtl が上書きする) */
+export async function getEntry<T>(store: KeyValueStore, key: string, now: number, maxAgeMs: number = MAX_TTL_MS): Promise<CacheHit<T> | undefined> {
+  const entry = await store.get<TtlEntry<T>>(key);
+  if (entry === undefined || typeof entry !== 'object' || entry === null) return undefined;
+  if (typeof entry.expiresAt !== 'number') return undefined;
+  const storedAt = typeof entry.storedAt === 'number' ? entry.storedAt : null;
+  const ageMs = storedAt === null ? 0 : Math.max(0, now - storedAt);
+  if (entry.expiresAt > now) return { value: entry.value, fresh: true, ageMs };
+  if (storedAt === null) return undefined;
+  if (now - storedAt > clampTtl(maxAgeMs)) return undefined;
+  return { value: entry.value, fresh: false, ageMs };
 }
 
 export async function getFresh<T>(store: KeyValueStore, key: string, now: number): Promise<T | undefined> {
-  const entry = await store.get<TtlEntry<T>>(key);
-  if (entry === undefined || typeof entry !== 'object' || entry === null) return undefined;
-  if (typeof entry.expiresAt !== 'number' || entry.expiresAt <= now) return undefined;
-  return entry.value;
+  const hit = await getEntry<T>(store, key, now);
+  return hit !== undefined && hit.fresh ? hit.value : undefined;
 }
 
 export async function setWithTtl<T>(store: KeyValueStore, key: string, value: T, ttlMs: number, now: number): Promise<void> {
-  const entry: TtlEntry<T> = { value, expiresAt: now + clampTtl(ttlMs) };
+  const entry: TtlEntry<T> = { value, expiresAt: now + clampTtl(ttlMs), storedAt: now };
   await store.set(key, entry);
 }

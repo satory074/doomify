@@ -1,5 +1,6 @@
 /** `?demo=1` で開くと、Spotify にログインせずダミーデータでフィード UI を触れる(音は出ない)。
- *  レイアウト確認と、Client ID を設定する前の動作イメージ用 */
+ *  レイアウト確認と、Client ID を設定する前の動作イメージ用。`&delay=800` で偽 API の応答を遅らせ、
+ *  スケルトン → 最初のカード → 裏の補充という順序を目で確かめられる */
 import { createAuthManager } from './core/auth/authManager';
 import { MemoryStorage } from './core/auth/tokenStore';
 import { createHistory } from './core/feed/history';
@@ -9,7 +10,10 @@ import type { ApiClient } from './core/spotify/apiClient';
 import { MemoryStore } from './core/spotify/cache';
 import type { Services } from './services';
 
-const DEMO_AT_LOAD = typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('demo') === '1';
+const PARAMS_AT_LOAD = typeof window !== 'undefined' ? new URLSearchParams(window.location.search) : null;
+const DEMO_AT_LOAD = PARAMS_AT_LOAD?.get('demo') === '1';
+/** 偽 API の応答遅延 ms(`&delay=`)。ローディング表示と種の逐次合流の確認用 */
+const DEMO_DELAY_MS = Math.max(0, Number(PARAMS_AT_LOAD?.get('delay') ?? 0) || 0);
 
 /** ページ読み込み時のクエリで判定し、以後は固定(認証処理が URL を掃除しても変わらない) */
 export function isDemo(): boolean {
@@ -75,7 +79,7 @@ export function createDemoTarget(): PlaybackTarget {
 }
 
 export function createDemoServices(): Services {
-  const { api } = createFakeApi();
+  const { api } = createFakeApi({}, DEMO_DELAY_MS > 0 ? { delay: () => DEMO_DELAY_MS } : {});
   const store = new MemoryStore();
   const client: ApiClient = {
     request: async () => {

@@ -36,14 +36,59 @@ function hash(s: string): number {
   return h % 100_000;
 }
 
-export function createFakeApi(overrides: Partial<SpotifyApi> = {}): { api: SpotifyApi; calls: string[] } {
+export interface FakeApiOptions {
+  /** 呼び出し名(calls に記録される文字列)ごとの応答遅延 ms。setTimeout なので vi.useFakeTimers + advanceTimersByTimeAsync で進める */
+  delay?: (call: string) => number;
+}
+
+type AsyncMethod = (...args: never[]) => Promise<unknown>;
+
+/** 各メソッドを「応答の前に delay(呼び出し名) だけ待つ」形に包む。calls への記録は呼び出し時のまま(先頭で同期的に log される) */
+function withDelay(api: SpotifyApi, calls: readonly string[], delay: (call: string) => number): SpotifyApi {
+  const wait = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+  const wrap = <F extends AsyncMethod>(fn: F): F => {
+    const wrapped = async (...args: Parameters<F>): Promise<unknown> => {
+      const at = calls.length;
+      try {
+        return await fn(...args);
+      } finally {
+        const ms = delay(calls[at] ?? '');
+        if (ms > 0) await wait(ms);
+      }
+    };
+    return wrapped as unknown as F;
+  };
+  return {
+    me: wrap(api.me),
+    topTracks: wrap(api.topTracks),
+    topArtists: wrap(api.topArtists),
+    savedTracks: wrap(api.savedTracks),
+    followedArtists: wrap(api.followedArtists),
+    recentlyPlayed: wrap(api.recentlyPlayed),
+    myPlaylists: wrap(api.myPlaylists),
+    playlistItems: wrap(api.playlistItems),
+    createPlaylist: wrap(api.createPlaylist),
+    addToPlaylist: wrap(api.addToPlaylist),
+    track: wrap(api.track),
+    album: wrap(api.album),
+    artist: wrap(api.artist),
+    artistAlbums: wrap(api.artistAlbums),
+    search: wrap(api.search),
+    saveToLibrary: wrap(api.saveToLibrary),
+    removeFromLibrary: wrap(api.removeFromLibrary),
+    libraryContains: wrap(api.libraryContains),
+    player: api.player,
+  };
+}
+
+export function createFakeApi(overrides: Partial<SpotifyApi> = {}, opts: FakeApiOptions = {}): { api: SpotifyApi; calls: string[] } {
   const calls: string[] = [];
   const log = (s: string) => {
     calls.push(s);
   };
   const artist = (id: string, genres?: string[]): Artist => ({ id, name: `Artist ${id}`, uri: `spotify:artist:${id}`, genres });
 
-  const api: SpotifyApi = {
+  const base: SpotifyApi = {
     me: async () => {
       log('me');
       return { id: 'me', display_name: 'Me' };
@@ -154,5 +199,6 @@ export function createFakeApi(overrides: Partial<SpotifyApi> = {}): { api: Spoti
     },
     ...overrides,
   };
+  const api = opts.delay === undefined ? base : withDelay(base, calls, opts.delay);
   return { api, calls };
 }

@@ -5,7 +5,7 @@ import type { FeedItem } from '../core/feed/types';
 import type { LeaveInfo } from '../core/playback/controller';
 import { trackIdFromUri } from '../core/spotify/types';
 import { createValueStore } from '../core/valueStore';
-import { useActiveIndex } from '../hooks/useActiveIndex';
+import { useActiveIndex, type IntentSource } from '../hooks/useActiveIndex';
 import { useFeed } from '../hooks/useFeed';
 import { useKeyboardNav } from '../hooks/useKeyboardNav';
 import { useMediaSession } from '../hooks/useMediaSession';
@@ -17,6 +17,7 @@ import { DevicePicker, type DeviceChoice } from './DevicePicker';
 import { Feed } from './Feed';
 import { PlaylistPicker } from './PlaylistPicker';
 import { SettingsSheet } from './SettingsSheet';
+import { preloadCovers } from './coverPreload';
 import { TapToStartGate } from './TapToStartGate';
 import { ToastStack } from './Toast';
 import { TopBar } from './TopBar';
@@ -48,7 +49,10 @@ export function FeedScreen({ services, settings, updateSettings, authStatus, onL
   }, [settings, feedSettingsStore, playbackSettingsStore]);
 
   const { engine, items, status } = useFeed(services, feedSettingsStore);
-  const { active, pending, scrollToIndex } = useActiveIndex(containerRef, items.length);
+  // 意図(向かっている先)は usePlayback より前に必要になるので、実体は後で差し替えるトランポリン経由で受ける
+  const intentHandlerRef = useRef<(index: number, source: IntentSource) => void>(() => {});
+  const onIntent = useCallback((index: number, source: IntentSource) => intentHandlerRef.current(index, source), []);
+  const { active, scrollToIndex } = useActiveIndex(containerRef, items.length, { onIntent });
   const { toasts, show: toast, dismiss } = useToasts();
 
   const itemsRef = useRef(items);
@@ -123,22 +127,80 @@ export function FeedScreen({ services, settings, updateSettings, authStatus, onL
   const playback = usePlayback(services, settings, playbackSettingsStore, callbacks);
   const { controller, target, snapshot } = playback;
 
-  // 開発時のみ: ブラウザのコンソールから移動を試せるようにする(自動テスト用)
+  const startedRef = useRef(playback.started);
+  useEffect(() => {
+    startedRef.current = playback.started;
+  }, [playback.started]);
+
+  // 向かう先が分かった瞬間(スナップ完了前)に再生要求を出す。React state を経由しないので描画を待たない
+  const lastIntentSourceRef = useRef<IntentSource | null>(null);
+  useEffect(() => {
+    intentHandlerRef.current = (index, source) => {
+      lastIntentSourceRef.current = source;
+      const item = itemsRef.current[index];
+      if (item !== undefined && startedRef.current) {
+        controller.setActiveTrack({ uri: item.track.uri, durationMs: item.track.duration_ms }, index);
+      }
+      preloadCovers(itemsRef.current, index);
+      // 補充の GET は再生要求を積んだ後に(同じキューで再生要求の前に並ばないように)
+      void engine.ensureAhead(index);
+    };
+  }, [controller, engine]);
+
+  // アクティブカードの確定。通常は意図と同じ曲なので controller 側で no-op。items が増えたときの先読みと補充もここで
+  const commitAtRef = useRef<number | null>(null);
+  useEffect(() => {
+    commitAtRef.current = Date.now();
+  }, [active]);
+  useEffect(() => {
+    const item = items[active];
+    if (item !== undefined && playback.started) {
+      controller.setActiveTrack({ uri: item.track.uri, durationMs: item.track.duration_ms }, active);
+    }
+    preloadCovers(items, active);
+    void engine.ensureAhead(active);
+  }, [active, items, engine, controller, playback.started]);
+
+  // 開発時のみ: ブラウザのコンソールから移動を試せるようにする(自動テスト用)と、スワイプ → 発音の遅延の内訳
   useEffect(() => {
     if (!import.meta.env.DEV) return;
-    window.__doomify = { goTo, scrollToIndex, snapshot: () => controller.snapshot() };
+    const diff = (from: number | null, to: number | null) => (from === null || to === null ? null : to - from);
+    const timing = () => {
+      const s = controller.snapshot();
+      return {
+        index: s.intent?.index ?? null,
+        source: lastIntentSourceRef.current,
+        intentAt: s.intentAt,
+        issuedAt: s.issuedAt,
+        resolvedAt: s.resolvedAt,
+        startedAt: s.startedAt,
+        commitAt: commitAtRef.current,
+        intentToIssueMs: diff(s.intentAt, s.issuedAt),
+        intentToResolveMs: diff(s.intentAt, s.resolvedAt),
+        intentToStartMs: diff(s.intentAt, s.startedAt),
+        intentToCommitMs: commitAtRef.current !== null && s.intentAt !== null && commitAtRef.current >= s.intentAt ? commitAtRef.current - s.intentAt : null,
+      };
+    };
+    window.__doomify = { goTo, scrollToIndex, snapshot: () => controller.snapshot(), timing };
+    let loggedFor: number | null = null;
+    const unsubscribe = controller.subscribe((s) => {
+      if (s.startedAt === null || s.intentAt === null || loggedFor === s.intentAt) return;
+      loggedFor = s.intentAt;
+      // resolvedAt は play() の解決後に入る(デモは解決前に state を出す)ので、同期の連鎖が終わってから読む
+      const intentAt = s.intentAt;
+      setTimeout(() => {
+        const t = timing();
+        if (t.intentAt !== intentAt) return;
+        console.debug(
+          `[doomify] #${t.index} (${t.source}) intent→issued +${t.intentToIssueMs}ms, →resolved +${t.intentToResolveMs}ms, →started +${t.intentToStartMs}ms, commit +${t.intentToCommitMs}ms`,
+        );
+      }, 0);
+    });
     return () => {
+      unsubscribe();
       delete window.__doomify;
     };
   }, [goTo, scrollToIndex, controller]);
-
-  // アクティブカードが変わったら再生意図を更新し、先読み補充する
-  useEffect(() => {
-    const item = items[active];
-    void engine.ensureAhead(active);
-    if (item === undefined || !playback.started) return;
-    controller.setActiveTrack({ uri: item.track.uri, durationMs: item.track.duration_ms }, active);
-  }, [active, items, engine, controller, playback.started]);
 
   useEffect(() => {
     return services.client.onRateLimit((info) => {
@@ -241,7 +303,6 @@ export function FeedScreen({ services, settings, updateSettings, authStatus, onL
         containerRef={containerRef}
         items={items}
         active={active}
-        pending={pending}
         snapshot={snapshot}
         likedIds={likedIds}
         likeBusyId={likeBusyId}

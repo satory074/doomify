@@ -54,8 +54,15 @@ afterEach(() => {
 
 describe('toPlaybackState', () => {
   it('null は停止状態、再生中は item から uri/duration を取る', () => {
-    expect(toPlaybackState(null, 1)).toEqual({ uri: null, positionMs: 0, durationMs: 0, paused: true, updatedAt: 1 });
-    expect(toPlaybackState(playing, 2)).toEqual({ uri: 'spotify:track:x', positionMs: 12_000, durationMs: 180_000, paused: false, updatedAt: 2 });
+    expect(toPlaybackState(null, 1)).toEqual({ uri: null, positionMs: 0, durationMs: 0, paused: true, loading: false, updatedAt: 1 });
+    expect(toPlaybackState(playing, 2)).toEqual({
+      uri: 'spotify:track:x',
+      positionMs: 12_000,
+      durationMs: 180_000,
+      paused: false,
+      loading: false,
+      updatedAt: 2,
+    });
   });
 });
 

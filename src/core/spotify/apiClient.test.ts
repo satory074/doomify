@@ -207,6 +207,81 @@ describe('優先度・キャッシュ・並列', () => {
     expect(client.stats().cacheHits).toBe(1);
   });
 
+  it('playback は同時実行数を 1 つ超えて即時に始まる', async () => {
+    let releaseFirst: () => void = () => {};
+    const gate = new Promise<void>((r) => (releaseFirst = r));
+    const { fn, calls } = scriptedFetch([() => gate.then(() => jsonRes(200, { n: 0 })), jsonRes(200, { n: 1 })]);
+    const { client } = makeClient(fn, { concurrency: 1 });
+    const first = client.request({ method: 'GET', path: '/first' });
+    await vi.advanceTimersByTimeAsync(0);
+    const feed = client.request({ method: 'GET', path: '/feed', priority: 'feed' });
+    const playback = client.request({ method: 'PUT', path: '/me/player/play', priority: 'playback' });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(calls.map((c) => new URL(c.url).pathname)).toEqual(['/v1/first', '/v1/me/player/play']);
+    releaseFirst();
+    await Promise.all([first, feed, playback]);
+    expect(calls.map((c) => new URL(c.url).pathname)).toEqual(['/v1/first', '/v1/me/player/play', '/v1/feed']);
+  });
+
+  it('playback は最小間隔を待たず、feed は待つ', async () => {
+    const times: Record<string, number> = {};
+    const fn = (async (url: string | URL | Request) => {
+      times[new URL(String(url)).pathname] = Date.now();
+      await new Promise((r) => setTimeout(r, 50));
+      return jsonRes(200, {});
+    }) as unknown as typeof fetch;
+    const { client } = makeClient(fn, { concurrency: 2, minSpacingMs: 1000 });
+    const start = Date.now();
+    const feed1 = client.request({ method: 'GET', path: '/feed1' });
+    await vi.advanceTimersByTimeAsync(10);
+    const playback = client.request({ method: 'PUT', path: '/play', priority: 'playback' });
+    const feed2 = client.request({ method: 'GET', path: '/feed2' });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(times['/v1/play']).toBe(start + 10);
+    await vi.advanceTimersByTimeAsync(2000);
+    await Promise.all([feed1, playback, feed2]);
+    expect(times['/v1/feed2']).toBe(start + 1000);
+  });
+
+  it('間隔待ちで眠っている pump を playback が起こす', async () => {
+    const times: Record<string, number> = {};
+    const fn = (async (url: string | URL | Request) => {
+      times[new URL(String(url)).pathname] = Date.now();
+      await new Promise((r) => setTimeout(r, 50));
+      return jsonRes(200, {});
+    }) as unknown as typeof fetch;
+    const { client } = makeClient(fn, { concurrency: 2, minSpacingMs: 1000 });
+    const start = Date.now();
+    const feed1 = client.request({ method: 'GET', path: '/feed1' });
+    const feed2 = client.request({ method: 'GET', path: '/feed2' });
+    await vi.advanceTimersByTimeAsync(100);
+    expect(times['/v1/feed2']).toBeUndefined();
+    const playback = client.request({ method: 'PUT', path: '/play', priority: 'playback' });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(times['/v1/play']).toBe(start + 100);
+    await vi.advanceTimersByTimeAsync(2000);
+    await Promise.all([feed1, feed2, playback]);
+    expect(times['/v1/feed2']).toBe(start + 1000);
+  });
+
+  it('abort 済みの先頭ジョブは枠を待たずに捨てる', async () => {
+    let releaseFirst: () => void = () => {};
+    const gate = new Promise<void>((r) => (releaseFirst = r));
+    const { fn, calls } = scriptedFetch([() => gate.then(() => jsonRes(200, {})), jsonRes(200, {})]);
+    const { client } = makeClient(fn, { concurrency: 1 });
+    const first = client.request({ method: 'GET', path: '/first' });
+    await vi.advanceTimersByTimeAsync(0);
+    const ac = new AbortController();
+    const aborted = client.request({ method: 'GET', path: '/a', signal: ac.signal });
+    ac.abort();
+    const next = client.request({ method: 'GET', path: '/b' });
+    await expect(aborted).rejects.toMatchObject({ code: 'aborted' });
+    expect(calls).toHaveLength(1);
+    releaseFirst();
+    await Promise.all([first, next]);
+    expect(calls.map((c) => new URL(c.url).pathname)).toEqual(['/v1/first', '/v1/b']);
+  });
+
   it('同時実行数と最小間隔を守る', async () => {
     const times: number[] = [];
     const fn = (async () => {

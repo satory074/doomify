@@ -18,12 +18,13 @@ export interface ConnectTargetDeps {
 }
 
 export function toPlaybackState(s: PlayerState | null, now: number): PlaybackState {
-  if (s === null) return { uri: null, positionMs: 0, durationMs: 0, paused: true, updatedAt: now };
+  if (s === null) return { uri: null, positionMs: 0, durationMs: 0, paused: true, loading: false, updatedAt: now };
   return {
     uri: s.item?.uri ?? null,
     positionMs: s.progress_ms ?? 0,
     durationMs: s.item?.duration_ms ?? 0,
     paused: !s.is_playing,
+    loading: false,
     updatedAt: now,
   };
 }
@@ -34,7 +35,7 @@ export function createConnectTarget(deps: ConnectTargetDeps): PlaybackTarget {
   const confirmDelayMs = deps.confirmDelayMs ?? 1_500;
   const isVisible = deps.isVisible ?? (() => (typeof document === 'undefined' ? true : document.visibilityState === 'visible'));
   const listeners = new Set<(e: TargetEvent) => void>();
-  let last: PlaybackState = { uri: null, positionMs: 0, durationMs: 0, paused: true, updatedAt: now() };
+  let last: PlaybackState = { uri: null, positionMs: 0, durationMs: 0, paused: true, loading: false, updatedAt: now() };
   let pollTimer: ReturnType<typeof setTimeout> | null = null;
   let disposed = false;
 

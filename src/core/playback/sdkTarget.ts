@@ -60,6 +60,7 @@ export function createSdkTarget(deps: SdkTargetDeps): PlaybackTarget {
           positionMs: s.position,
           durationMs: s.duration,
           paused: s.paused,
+          loading: s.loading,
           updatedAt: now(),
         };
 

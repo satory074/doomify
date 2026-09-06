@@ -1,7 +1,8 @@
 /** 「いま鳴らしたい曲」の意図を 1 か所に集約する。
- *  - スワイプ連打はデバウンスして最後の 1 曲だけ再生要求を出す
+ *  - 意図が来たらその場で再生要求を出す(leading)。issueIntervalMs 以内に続いた意図は最新の 1 つだけを後で出す(trailing)
  *  - 古い要求は AbortController + seq で捨てる
- *  - 再生開始後に target が別の曲を報告していれば 1 回だけ再送(PUT の順序逆転対策)
+ *  - 要求の解決後に target が別の曲を報告してきたら 1 回だけ再送(PUT の順序逆転対策)。
+ *    何も報告が無い間は 1 周期余分に待つ(バッファ中の SDK に同じ PUT を重ねない)
  *  - 自動送り(一定時間 or 曲終了)を判定して onAdvance を発火
  *  React 非依存。タイマーはグローバル setTimeout/setInterval(テストは fake timers) */
 import { AuthError } from '../auth/authManager';
@@ -54,8 +55,14 @@ export interface ControllerSnapshot {
   durationMs: number;
   paused: boolean;
   requesting: boolean;
-  /** この intent の曲が鳴り始めた時刻 */
+  /** この intent の曲が実際に鳴り始めた時刻(SDK の loading が解けてから) */
   startedAt: number | null;
+  /** この intent が決まった時刻(遅延計測用) */
+  intentAt: number | null;
+  /** この intent の最初の再生要求を出した時刻 */
+  issuedAt: number | null;
+  /** その要求が解決(受理)した時刻 */
+  resolvedAt: number | null;
   ready: boolean;
 }
 
@@ -66,9 +73,9 @@ export interface LeaveInfo {
 }
 
 export interface PlaybackController {
-  /** アクティブカードが変わるたびに呼ぶ。null はカード無し */
+  /** アクティブカード(または向かっている先)が変わるたびに呼ぶ。null はカード無し */
   setActiveTrack(track: { uri: string; durationMs: number } | null, index: number): void;
-  /** ユーザー操作直後に現在の意図を即時再送する(デバウンス無し) */
+  /** ユーザー操作直後に現在の意図を確実に出す。間隔待ち中なら即時に流し、同じ意図の要求が進行中なら何もしない */
   retryCurrent(): void;
   togglePause(): Promise<void>;
   snapshot(): ControllerSnapshot;
@@ -88,9 +95,9 @@ export interface ControllerDeps {
   target: PlaybackTarget;
   settings: () => PlaybackSettings;
   now?: () => number;
-  /** スワイプ確定から再生要求までの待ち(既定 250ms) */
-  debounceMs?: number;
-  /** 再生要求後、target が別の曲を報告し続けていたら再送するまでの待ち(既定 1500ms) */
+  /** 再生要求の最小間隔(既定 250ms)。最初の意図は即時、間隔内に続いた意図は最新だけを間隔明けに出す */
+  issueIntervalMs?: number;
+  /** 再生要求の解決後、target が別の曲を報告してきたら再送するまでの待ち(既定 1500ms)。無報告ならもう 1 周期待つ */
   reconcileMs?: number;
   /** 位置補間と自動送り判定の周期(既定 500ms) */
   tickMs?: number;
@@ -135,19 +142,27 @@ function mapTargetError(code: TargetErrorCode): ControllerErrorCode {
 
 export function createPlaybackController(deps: ControllerDeps): PlaybackController {
   const now = deps.now ?? (() => Date.now());
-  const debounceMs = deps.debounceMs ?? 250;
+  const issueIntervalMs = deps.issueIntervalMs ?? 250;
   const reconcileMs = deps.reconcileMs ?? 1500;
   const tickMs = deps.tickMs ?? 500;
   const endToleranceMs = deps.endToleranceMs ?? 600;
 
   let intent: TrackIntent | null = null;
   let seq = 0;
-  let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+  let pendingTimer: ReturnType<typeof setTimeout> | null = null;
   let reconcileTimer: ReturnType<typeof setTimeout> | null = null;
   let abort: AbortController | null = null;
   let lastState: PlaybackState | null = null;
+  /** state イベントの通し番号。要求の解決後に何か報告があったかの判定に使う */
+  let stateSeq = 0;
   let requesting = false;
+  /** 進行中の要求が向いている意図 */
+  let inflight: TrackIntent | null = null;
+  let lastIssueAt = Number.NEGATIVE_INFINITY;
   let startedAt: number | null = null;
+  let intentAt: number | null = null;
+  let issuedAt: number | null = null;
+  let resolvedAt: number | null = null;
   let startMs = 0;
   let advanced = false;
   let reconciled = false;
@@ -182,6 +197,9 @@ export function createPlaybackController(deps: ControllerDeps): PlaybackControll
     paused: lastState?.paused ?? true,
     requesting,
     startedAt,
+    intentAt,
+    issuedAt,
+    resolvedAt,
     ready,
   });
 
@@ -209,7 +227,8 @@ export function createPlaybackController(deps: ControllerDeps): PlaybackControll
       const pos = interpolatedPosition();
       wasPlaying = true;
       lastObservedPos = pos;
-      if (startedAt === null) startedAt = now();
+      // SDK は再生開始の指示直後から paused=false を報告するが、loading の間はまだ鳴っていない
+      if (startedAt === null && !lastState.loading) startedAt = now();
       if (settings.advanceAfterMs !== null && pos - startMs >= settings.advanceAfterMs) {
         advance();
         return;
@@ -222,14 +241,31 @@ export function createPlaybackController(deps: ControllerDeps): PlaybackControll
   };
 
   const clearTimers = () => {
-    if (debounceTimer !== null) {
-      clearTimeout(debounceTimer);
-      debounceTimer = null;
+    if (pendingTimer !== null) {
+      clearTimeout(pendingTimer);
+      pendingTimer = null;
     }
     if (reconcileTimer !== null) {
       clearTimeout(reconcileTimer);
       reconcileTimer = null;
     }
+  };
+
+  /** 要求の解決後、target が別の曲を報告し続けていれば 1 回だけ再送する。
+   *  解決後に何も報告が無い間は(SDK がまだバッファ中かもしれないので)もう 1 周期待つ */
+  const armReconcile = (target: TrackIntent, seqAtResolve: number, secondPass: boolean) => {
+    reconcileTimer = setTimeout(() => {
+      reconcileTimer = null;
+      if (intent !== target || reconciled) return;
+      if (lastState?.uri === target.uri) return;
+      const heardSinceResolve = stateSeq !== seqAtResolve;
+      if (!heardSinceResolve && !secondPass) {
+        armReconcile(target, seqAtResolve, true);
+        return;
+      }
+      reconciled = true;
+      void issuePlay(target, true);
+    }, reconcileMs);
   };
 
   const issuePlay = async (target: TrackIntent, isRetry: boolean) => {
@@ -239,29 +275,40 @@ export function createPlaybackController(deps: ControllerDeps): PlaybackControll
     const mySeq = ++seq;
     startMs = startPositionFor(target.durationMs, deps.settings());
     requesting = true;
+    inflight = target;
+    lastIssueAt = now();
+    if (!isRetry) issuedAt = now();
     emitSnapshot();
     try {
       await deps.target.play(target.uri, startMs, controller.signal);
       if (mySeq !== seq || !running) return;
       requesting = false;
-      if (!isRetry) {
-        reconcileTimer = setTimeout(() => {
-          reconcileTimer = null;
-          if (intent === target && !reconciled && lastState?.uri !== target.uri) {
-            reconciled = true;
-            void issuePlay(target, true);
-          }
-        }, reconcileMs);
-      }
+      inflight = null;
+      resolvedAt = now();
+      if (!isRetry) armReconcile(target, stateSeq, false);
       emitSnapshot();
     } catch (e) {
       if (mySeq !== seq || !running) return;
       requesting = false;
+      inflight = null;
       if (e instanceof ApiError && e.code === 'aborted') return;
       const mapped = mapPlayError(e);
       emitError(mapped.code, mapped.message);
       emitSnapshot();
     }
+  };
+
+  /** 前回の発行から間隔が空いていれば即時、空いていなければ間隔明けに(そのとき最新の)意図を出す */
+  const scheduleIssue = () => {
+    const wait = lastIssueAt + issueIntervalMs - now();
+    if (wait <= 0) {
+      if (intent !== null) void issuePlay(intent, false);
+      return;
+    }
+    pendingTimer = setTimeout(() => {
+      pendingTimer = null;
+      if (intent !== null) void issuePlay(intent, false);
+    }, wait);
   };
 
   const onEvent = (e: TargetEvent) => {
@@ -277,6 +324,7 @@ export function createPlaybackController(deps: ControllerDeps): PlaybackControll
         break;
       case 'state':
         lastState = e.state;
+        stateSeq++;
         checkAdvance();
         emitSnapshot();
         break;
@@ -313,6 +361,7 @@ export function createPlaybackController(deps: ControllerDeps): PlaybackControll
     unsubscribeTarget?.();
     unsubscribeTarget = null;
     requesting = false;
+    inflight = null;
   };
 
   return {
@@ -331,23 +380,22 @@ export function createPlaybackController(deps: ControllerDeps): PlaybackControll
       seq++;
       intent = track === null ? null : { uri: track.uri, durationMs: track.durationMs, index };
       startedAt = null;
+      intentAt = intent === null ? null : now();
+      issuedAt = null;
+      resolvedAt = null;
       advanced = false;
       reconciled = false;
       wasPlaying = false;
       lastObservedPos = 0;
       requesting = false;
+      inflight = null;
       emitSnapshot();
-      if (intent !== null) {
-        const target = intent;
-        debounceTimer = setTimeout(() => {
-          debounceTimer = null;
-          void issuePlay(target, false);
-        }, debounceMs);
-      }
+      if (intent !== null) scheduleIssue();
     },
 
     retryCurrent() {
       if (intent === null) return;
+      if (pendingTimer === null && requesting && inflight === intent) return;
       clearTimers();
       reconciled = false;
       void issuePlay(intent, false);

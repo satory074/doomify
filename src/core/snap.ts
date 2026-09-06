@@ -21,3 +21,10 @@ export function isSettled(scrollTop: number, itemHeight: number, toleranceRatio 
   const nearest = Math.round(scrollTop / itemHeight) * itemHeight;
   return Math.abs(scrollTop - nearest) <= itemHeight * toleranceRatio;
 }
+
+/** カード要素の data-index 属性値を index に変換する。0 以上の整数文字列で count 未満のときだけ返す */
+export function parseCardIndex(raw: string | undefined, count: number): number | null {
+  if (raw === undefined || !/^\d+$/.test(raw)) return null;
+  const index = Number(raw);
+  return index < count ? index : null;
+}

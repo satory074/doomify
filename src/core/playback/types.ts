@@ -5,6 +5,8 @@ export interface PlaybackState {
   positionMs: number;
   durationMs: number;
   paused: boolean;
+  /** SDK がバッファ中でまだ音が出ていない。SDK 以外の再生先は常に false */
+  loading: boolean;
   /** この状態を観測した時刻(epoch ms)。位置の補間に使う */
   updatedAt: number;
 }

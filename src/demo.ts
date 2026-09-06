@@ -24,7 +24,7 @@ const DEMO_DURATION_MS = 200_000;
 
 export function createDemoTarget(): PlaybackTarget {
   const listeners = new Set<(e: TargetEvent) => void>();
-  let state: PlaybackState = { uri: null, positionMs: 0, durationMs: 0, paused: true, updatedAt: Date.now() };
+  let state: PlaybackState = { uri: null, positionMs: 0, durationMs: 0, paused: true, loading: false, updatedAt: Date.now() };
   let timer: ReturnType<typeof setInterval> | null = null;
   const emit = (e: TargetEvent) => {
     for (const l of listeners) l(e);

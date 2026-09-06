@@ -57,6 +57,9 @@ const EMPTY_SNAPSHOT: ControllerSnapshot = {
   paused: true,
   requesting: false,
   startedAt: null,
+  intentAt: null,
+  issuedAt: null,
+  resolvedAt: null,
   ready: false,
 };
 

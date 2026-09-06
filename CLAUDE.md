@@ -26,15 +26,17 @@ npm run preview  # PWA/SW の動作確認
 
 - **`src/core/`** — React 非依存の純 TS。全モジュールに `*.test.ts` を併設。外部(fetch / crypto / now / rng / storage)は注入
   - `auth/` PKCE(`pkce.ts`)、トークン永続化(`tokenStore.ts`)、`authManager.ts`(single-flight refresh、6 か月失効の予告、`invalid_grant` → 再ログイン)
-  - `spotify/` `apiClient.ts`(優先度キュー playback>action>feed、同時 2・間隔 150ms、429 共通ゲート、401 強制更新 1 回、GET 短命キャッシュ)、
+  - `spotify/` `apiClient.ts`(優先度キュー playback>action>feed、同時 2・間隔 150ms。**playback は同時 +1 の専用枠で間隔免除**、間隔待ちの sleep も起こす。429 共通ゲート、401 強制更新 1 回、GET 短命キャッシュ)、
     `endpoints.ts`(2026-02 以降の開発モードで使えるエンドポイントだけ。**search / artistAlbums の limit 上限は 10**)、`types.ts`、`cache.ts`(idb-keyval + TTL ≤24h。`getEntry` は期限切れでも 24h 以内なら stale として返す)
   - `feed/` `feedEngine.ts`(種 → 3 バケットの候補プール → 重み付き抽選 → items 追記専用)、`sources.ts`(種: top/saved/recent/following/playlists。`startSeeds` で届いた順に集約へ合流、IDB キャッシュは期限切れでも 24h 以内なら stale で先に使い裏で再取得)、
     `expanders.ts`(deep_cut / appears_on / genre_search / tag_new / tag_hipster)、`scheduler.ts`(予算内の補充計画・重複キー・アーティスト間隔)、`history.ts`(seen 30 日・親和度)
-  - `playback/` `controller.ts`(意図の集約: デバウンス 250ms、abort+seq、URI 照合の 1 回再送、自動送り判定、位置補間)、
+  - `playback/` `controller.ts`(意図の集約: 意図が来たら即時発行、250ms 以内の連続は最新だけ間隔明けに(leading+trailing)、abort+seq、
+    要求解決後に別曲の報告があれば 1.5s・無報告なら 3s で 1 回再送、自動送り判定、位置補間。snapshot に intentAt/issuedAt/resolvedAt/startedAt の計測値)、
     `sdkTarget.ts`(Web Playback SDK。`activate()` はタップ内で同期に)、`connectTarget.ts`(遠隔。可視中 10 秒ポーリング)
   - `snap.ts` スクロール幾何、`palette.ts` カバーからの配色、`env.ts` 端末判定、`format.ts`
 - **`src/hooks/`** — `useAuth`(コールバック処理は module-level で 1 回だけ)、`useFeed`、`usePlayback`(target/controller の生成・破棄、失敗回数、visibilitychange 復帰)、
-  `useActiveIndex`(`scrollend` + 幾何。無ければ scroll アイドル 120ms。ResizeObserver で再整列)、`useSettings`、`useCoverPalette`、`useMediaSession`、`useKeyboardNav`
+  `useActiveIndex`(意図 `onIntent` を先に通知: `scrollsnapchanging`(Chrome 129+)/ 無ければ scroll 中に最寄りが変わった瞬間 / `scrollToIndex` の呼び出し時。
+  確定は `scrollend` + 幾何、無ければ scroll アイドル 150ms。確定が意図と食い違えば意図を出し直す。ResizeObserver で再整列)、`useSettings`、`useCoverPalette`、`useMediaSession`、`useKeyboardNav`
 - **`src/components/`** — `FeedScreen`(配線の中心)、`Feed`(殻は全部・中身は active ±2)、`CardShell`/`TrackCard`/`CardActions`、`TapToStartGate`、`TopBar`、
   `DevicePicker`、`PlaylistPicker`、`SettingsSheet`、`Modal`(`<dialog>`)、`Toast`、`UpdatePrompt`(SW は prompt 更新)、`SpotifyMark`(帰属)
 - **`src/services.ts`** — auth / client / api / store / history のシングルトン
@@ -44,7 +46,8 @@ npm run preview  # PWA/SW の動作確認
 - **API 呼び出しは予算制**: 補充 1 回 ≤6 コール(`FEED_CONSTANTS.budgetPerRefill`)。レート制限中は known バケットのみ(ゼロコール)。ポーリングは Connect モードだけ
 - **最初のカードは種 1 ソースで出す**: `bootstrap()` は曲を含む最初の種で解決し、items が空なら拡張(API)の応答を待たずにプールから `initialDraw` 枚を先に出す。
   残りの種・拡張は裏で合流(`seedsSettled()` で全確定を待てる)。種を待つ間は実カードと同寸のスケルトン(`Feed.tsx`)
-- **再生要求は controller だけが出す**。カード切替 → `setActiveTrack` → デバウンス → `target.play`。UI から直接 `api.player.play` を呼ばない
+- **再生要求は controller だけが出す**。意図(snap / 幾何 / `scrollToIndex`)→ `setActiveTrack` → 即時 `target.play`(スナップ完了を待たない)。UI から直接 `api.player.play` を呼ばない。
+  開発ビルドでは `window.__doomify.timing()` / console の `[doomify] … intent→issued` で意図 → 要求 → 受理 → 発音の遅延を確認できる
 - **自動再生制限**: 音を出す前に必ずユーザーのタップ(`TapToStartGate`)。`target.activate()` は await の前に同期で呼ぶ
 - **document はスクロールさせない**(`.feed` が fixed の唯一のスクローラ)。`100vh/100dvh` は使わず `height:100%`
 - **items は追記専用**(先頭削除は scrollTop ジャンプ)。上限 500 で「続きを読み込む」

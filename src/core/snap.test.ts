@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { clampIndex, indexFromScroll, isSettled, offsetForIndex } from './snap';
+import { clampIndex, indexFromScroll, isSettled, offsetForIndex, parseCardIndex } from './snap';
 
 describe('indexFromScroll', () => {
   it('四捨五入で最寄りのカードを返す', () => {
@@ -34,5 +34,21 @@ describe('isSettled', () => {
     expect(isSettled(800, 800)).toBe(true);
     expect(isSettled(812, 800)).toBe(true);
     expect(isSettled(830, 800)).toBe(false);
+  });
+});
+
+describe('parseCardIndex', () => {
+  it('0 以上の整数文字列で count 未満のときだけ index を返す', () => {
+    expect(parseCardIndex('3', 10)).toBe(3);
+    expect(parseCardIndex('0', 10)).toBe(0);
+    expect(parseCardIndex('9', 10)).toBe(9);
+  });
+  it('未定義・非数・小数・負数・範囲外・count 0 は null', () => {
+    expect(parseCardIndex(undefined, 10)).toBeNull();
+    expect(parseCardIndex('x', 10)).toBeNull();
+    expect(parseCardIndex('1.5', 10)).toBeNull();
+    expect(parseCardIndex('-1', 10)).toBeNull();
+    expect(parseCardIndex('10', 10)).toBeNull();
+    expect(parseCardIndex('0', 0)).toBeNull();
   });
 });

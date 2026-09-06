@@ -1,7 +1,8 @@
 /** Spotify Web API クライアント。
  *  - Bearer 付与、401 → トークン強制更新して 1 回再試行
  *  - 429 → Retry-After(QUOTA_EXCEEDED は 60 秒以上)の共通ゲート。全リクエストが待つ。1 回だけ再試行
- *  - 優先度キュー(playback > action > feed)、同時実行数と最小間隔で開発モードのレート制限に配慮
+ *  - 優先度キュー(playback > action > feed)、同時実行数と最小間隔で開発モードのレート制限に配慮。
+ *    playback は同時実行数 +1 の専用枠で最小間隔も免除(再生要求を feed の取得の後ろで待たせない)
  *  - GET は短命キャッシュ + 同一リクエストの in-flight 共有
  *  React 非依存。fetch / now / sleep は注入可能 */
 import { SyncTtlCache } from './cache';
@@ -155,6 +156,8 @@ export function createApiClient(deps: ApiClientDeps): ApiClient {
   let lastStartAt = Number.NEGATIVE_INFINITY;
   let gateUntil = 0;
   let pumping = false;
+  /** 間隔待ちで眠っている pump を起こす(playback が積まれたとき) */
+  let wake: (() => void) | null = null;
 
   const cacheKeyOf = (req: ApiRequest): string | null =>
     req.method === 'GET' && req.cacheTtlMs !== undefined && req.cacheTtlMs > 0
@@ -256,26 +259,39 @@ export function createApiClient(deps: ApiClientDeps): ApiClient {
     }
   };
 
+  const wakeSignal = () =>
+    new Promise<void>((r) => {
+      wake = r;
+    });
+
+  const isPlayback = (job: Job) => job.prio === PRIORITY_ORDER.playback;
+  /** playback は通常の枠が埋まっていても 1 本だけ追加で走らせる */
+  const limitFor = (job: Job) => (isPlayback(job) ? concurrency + 1 : concurrency);
+
   const pump = async () => {
     if (pumping) return;
     pumping = true;
     try {
-      while (active < concurrency && queue.length > 0) {
+      while (queue.length > 0) {
+        const head = queue[0];
+        if (head === undefined) break;
+        if (head.req.signal?.aborted) {
+          queue.shift();
+          head.reject(new ApiError('aborted', 0, 'aborted'));
+          continue;
+        }
+        if (active >= limitFor(head)) break;
         const t = now();
-        const wait = Math.max(gateUntil - t, lastStartAt + minSpacingMs - t, 0);
+        const wait = Math.max(gateUntil - t, isPlayback(head) ? 0 : lastStartAt + minSpacingMs - t, 0);
         if (wait > 0) {
-          await sleep(wait);
+          await Promise.race([sleep(wait), wakeSignal()]);
+          wake = null;
           continue;
         }
-        const job = queue.shift();
-        if (job === undefined) break;
-        if (job.req.signal?.aborted) {
-          job.reject(new ApiError('aborted', 0, 'aborted'));
-          continue;
-        }
+        queue.shift();
         active++;
-        lastStartAt = now();
-        void run(job).finally(() => {
+        if (!isPlayback(head)) lastStartAt = now();
+        void run(head).finally(() => {
           active--;
           void pump();
         });
@@ -299,6 +315,11 @@ export function createApiClient(deps: ApiClientDeps): ApiClient {
       };
       queue.push(job);
       queue.sort((a, b) => a.prio - b.prio || a.seq - b.seq);
+      if (isPlayback(job) && wake !== null) {
+        const w = wake;
+        wake = null;
+        w();
+      }
       void pump();
     });
 

@@ -1,4 +1,3 @@
-import { useEffect } from 'react';
 import { FEED_CONSTANTS } from '../core/feed/feedEngine';
 import type { FeedItem } from '../core/feed/types';
 import type { ControllerSnapshot } from '../core/playback/controller';
@@ -11,7 +10,6 @@ interface Props {
   containerRef: React.RefObject<HTMLDivElement | null>;
   items: readonly FeedItem[];
   active: number;
-  pending: number;
   snapshot: ControllerSnapshot;
   likedIds: ReadonlySet<string>;
   likeBusyId: string | null;
@@ -28,26 +26,9 @@ interface Props {
 }
 
 const RENDER_WINDOW = 2;
-const preloaded = new Set<string>();
-
-/** 向かっている先のカバー画像を先に取っておく(DOM は変えない) */
-function usePreloadCovers(items: readonly FeedItem[], pending: number) {
-  useEffect(() => {
-    for (const i of [pending + 1, pending + 2]) {
-      const item = items[i];
-      const url = item !== undefined ? pickImage(item.track.album.images, 640)?.url : undefined;
-      if (url === undefined || preloaded.has(url)) continue;
-      preloaded.add(url);
-      const img = new Image();
-      img.crossOrigin = 'anonymous';
-      img.src = url;
-    }
-  }, [items, pending]);
-}
 
 export function Feed(props: Props) {
-  const { containerRef, items, active, pending } = props;
-  usePreloadCovers(items, pending);
+  const { containerRef, items, active } = props;
   // 最初の種を待つ間は、実カードと同じ寸法のスケルトンを 1 枚だけ出す(届いたらその場で items に置き換わる)
   const waitingForFirst = items.length === 0 && props.error === null && !props.exhausted && !props.full;
   return (

@@ -52,7 +52,7 @@ function fakeTarget() {
       for (const l of listeners) l(e);
     },
     state: (partial: Partial<PlaybackState> & { uri: string }) =>
-      ({ positionMs: 0, durationMs: 180_000, paused: false, updatedAt: Date.now(), ...partial }) as PlaybackState,
+      ({ positionMs: 0, durationMs: 180_000, paused: false, loading: false, updatedAt: Date.now(), ...partial }) as PlaybackState,
   };
 }
 
@@ -86,16 +86,81 @@ describe('startPositionFor', () => {
 });
 
 describe('setActiveTrack', () => {
-  it('連続スワイプは最後の 1 曲だけ、開始位置は hook', async () => {
+  it('スワイプ 1 回は待たずにその場で再生要求を出す(開始位置は hook)', async () => {
+    const t = fakeTarget();
+    ctl = started(createPlaybackController({ target: t.target, settings: () => settings }));
+    ctl.setActiveTrack(TRACK_A, 0);
+    expect(t.playCalls).toHaveLength(1);
+    expect(t.playCalls[0]).toMatchObject({ uri: TRACK_A.uri, positionMs: 60_000 });
+    expect(ctl.snapshot().requesting).toBe(true);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(ctl.snapshot().requesting).toBe(false);
+  });
+
+  it('連打は先頭を即時、残りは 250ms 後に最後の 1 曲だけ', async () => {
     const t = fakeTarget();
     ctl = started(createPlaybackController({ target: t.target, settings: () => settings }));
     for (let i = 0; i < 5; i++) ctl.setActiveTrack({ uri: `spotify:track:${i}`, durationMs: 200_000 }, i);
-    await vi.advanceTimersByTimeAsync(249);
-    expect(t.playCalls).toHaveLength(0);
-    await vi.advanceTimersByTimeAsync(1);
     expect(t.playCalls).toHaveLength(1);
-    expect(t.playCalls[0]).toMatchObject({ uri: 'spotify:track:4', positionMs: 60_000 });
+    expect(t.playCalls[0]).toMatchObject({ uri: 'spotify:track:0' });
+    await vi.advanceTimersByTimeAsync(249);
+    expect(t.playCalls).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(t.playCalls).toHaveLength(2);
+    expect(t.playCalls[1]).toMatchObject({ uri: 'spotify:track:4', positionMs: 60_000 });
     expect(ctl.snapshot().intent?.index).toBe(4);
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(t.playCalls).toHaveLength(2);
+  });
+
+  it('前回の発行から 250ms 以上たっていれば次の意図も即時(前の要求は abort)', async () => {
+    const t = fakeTarget();
+    ctl = started(createPlaybackController({ target: t.target, settings: () => settings }));
+    ctl.setActiveTrack(TRACK_A, 0);
+    await vi.advanceTimersByTimeAsync(300);
+    ctl.setActiveTrack(TRACK_B, 1);
+    expect(t.playCalls).toHaveLength(2);
+    expect(t.playCalls[0]?.signal?.aborted).toBe(true);
+    expect(t.playCalls[1]).toMatchObject({ uri: TRACK_B.uri });
+  });
+
+  it('setActiveTrack 直後の retryCurrent は二重送信しない(初回タップ)。解決後は再送する(再開タップ)', async () => {
+    const t = fakeTarget();
+    let resolvePlay: () => void = () => {};
+    t.setPlayImpl(() => new Promise<void>((r) => (resolvePlay = r)));
+    ctl = started(createPlaybackController({ target: t.target, settings: () => settings }));
+    ctl.setActiveTrack(TRACK_A, 0);
+    ctl.retryCurrent();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(t.playCalls).toHaveLength(1);
+    resolvePlay();
+    await vi.advanceTimersByTimeAsync(0);
+    ctl.retryCurrent();
+    expect(t.playCalls).toHaveLength(2);
+  });
+
+  it('間隔待ち中の意図は retryCurrent で即時に流す', async () => {
+    const t = fakeTarget();
+    ctl = started(createPlaybackController({ target: t.target, settings: () => settings }));
+    ctl.setActiveTrack(TRACK_A, 0);
+    await vi.advanceTimersByTimeAsync(100);
+    ctl.setActiveTrack(TRACK_B, 1);
+    expect(t.playCalls).toHaveLength(1);
+    ctl.retryCurrent();
+    expect(t.playCalls).toHaveLength(2);
+    expect(t.playCalls[1]).toMatchObject({ uri: TRACK_B.uri });
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(t.playCalls).toHaveLength(2);
+  });
+
+  it('snapshot に intentAt / issuedAt / resolvedAt が入る', async () => {
+    const t = fakeTarget();
+    t.setPlayImpl(() => new Promise<void>((r) => setTimeout(r, 120)));
+    ctl = started(createPlaybackController({ target: t.target, settings: () => settings }));
+    ctl.setActiveTrack(TRACK_A, 0);
+    expect(ctl.snapshot()).toMatchObject({ intentAt: 1_000_000, issuedAt: 1_000_000, resolvedAt: null });
+    await vi.advanceTimersByTimeAsync(120);
+    expect(ctl.snapshot().resolvedAt).toBe(1_000_120);
   });
 
   it('同じ曲・同じ index の再指定は無視する', async () => {
@@ -145,17 +210,52 @@ describe('setActiveTrack', () => {
 });
 
 describe('reconcile', () => {
-  it('再生要求後 1.5 秒たっても別の曲が報告されていれば 1 回だけ再送する', async () => {
+  it('要求の解決後に別の曲が報告されていれば 1.5 秒で 1 回だけ再送する', async () => {
     const t = fakeTarget();
     ctl = started(createPlaybackController({ target: t.target, settings: () => settings }));
     ctl.setActiveTrack(TRACK_B, 1);
     await vi.advanceTimersByTimeAsync(250);
     expect(t.playCalls).toHaveLength(1);
+    // 要求は既に解決済み。そのあとで別の曲の状態が届く
     t.emit({ type: 'state', state: t.state({ uri: TRACK_A.uri, positionMs: 1000 }) });
     await vi.advanceTimersByTimeAsync(1500);
     expect(t.playCalls).toHaveLength(2);
     await vi.advanceTimersByTimeAsync(5000);
     expect(t.playCalls).toHaveLength(2);
+  });
+
+  it('解決後に何も報告が無ければ 1.5 秒では再送せず、3 秒で 1 回だけ再送する', async () => {
+    const t = fakeTarget();
+    ctl = started(createPlaybackController({ target: t.target, settings: () => settings }));
+    ctl.setActiveTrack(TRACK_B, 1);
+    await vi.advanceTimersByTimeAsync(1500);
+    expect(t.playCalls).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(1500);
+    expect(t.playCalls).toHaveLength(2);
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(t.playCalls).toHaveLength(2);
+  });
+
+  it('要求より前の古い曲の状態しか無い場合も 3 秒まで待つ', async () => {
+    const t = fakeTarget();
+    ctl = started(createPlaybackController({ target: t.target, settings: () => settings }));
+    t.emit({ type: 'state', state: t.state({ uri: TRACK_A.uri, positionMs: 1000 }) });
+    await vi.advanceTimersByTimeAsync(10);
+    ctl.setActiveTrack(TRACK_B, 1);
+    await vi.advanceTimersByTimeAsync(1500);
+    expect(t.playCalls).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(1500);
+    expect(t.playCalls).toHaveLength(2);
+  });
+
+  it('期待の曲なら loading 中でも再送しない', async () => {
+    const t = fakeTarget();
+    ctl = started(createPlaybackController({ target: t.target, settings: () => settings }));
+    ctl.setActiveTrack(TRACK_B, 1);
+    await vi.advanceTimersByTimeAsync(100);
+    t.emit({ type: 'state', state: t.state({ uri: TRACK_B.uri, positionMs: 0, paused: true, loading: true }) });
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(t.playCalls).toHaveLength(1);
   });
 
   it('期待どおりの曲が報告されていれば再送しない', async () => {
@@ -228,6 +328,24 @@ describe('自動送り', () => {
     expect(advanced).toEqual([0]);
   });
 
+  it('startedAt は loading が解けてから立つ(playedMs は実際に鳴った時間)', async () => {
+    const t = fakeTarget();
+    ctl = started(createPlaybackController({ target: t.target, settings: () => settings }));
+    const leaves: number[] = [];
+    ctl.onLeave((info) => leaves.push(info.playedMs));
+    ctl.setActiveTrack(TRACK_A, 0);
+    await vi.advanceTimersByTimeAsync(0);
+    t.emit({ type: 'state', state: t.state({ uri: TRACK_A.uri, positionMs: 60_000, loading: true }) });
+    expect(ctl.snapshot().startedAt).toBeNull();
+    await vi.advanceTimersByTimeAsync(700);
+    expect(ctl.snapshot().startedAt).toBeNull();
+    t.emit({ type: 'state', state: t.state({ uri: TRACK_A.uri, positionMs: 60_700, loading: false }) });
+    expect(ctl.snapshot().startedAt).toBe(1_000_700);
+    await vi.advanceTimersByTimeAsync(1_000);
+    ctl.setActiveTrack(TRACK_B, 1);
+    expect(leaves).toEqual([1_000]);
+  });
+
   it('別の曲の状態では進まない', async () => {
     const t = fakeTarget();
     ctl = started(createPlaybackController({ target: t.target, settings: () => settings }));
@@ -272,7 +390,7 @@ describe('エラーと操作', () => {
     expect(errors).toEqual([]);
   });
 
-  it('retryCurrent は即時に再送、togglePause は状態に応じて pause/resume', async () => {
+  it('retryCurrent は解決済みの意図を即時に再送、togglePause は状態に応じて pause/resume', async () => {
     const t = fakeTarget();
     ctl = started(createPlaybackController({ target: t.target, settings: () => settings }));
     ctl.setActiveTrack(TRACK_A, 0);

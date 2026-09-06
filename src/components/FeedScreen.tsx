@@ -21,6 +21,7 @@ import { preloadCovers } from './coverPreload';
 import { TapToStartGate } from './TapToStartGate';
 import { ToastStack } from './Toast';
 import { TopBar } from './TopBar';
+import type { FeedbackMark } from './TrackCard';
 import { UpdatePrompt } from './UpdatePrompt';
 
 interface Props {
@@ -31,8 +32,6 @@ interface Props {
   onLogout: () => void;
 }
 
-/** 2 秒未満で離れた曲は「飛ばした」とみなす */
-const SKIP_THRESHOLD_MS = 2000;
 /** 連続でこの回数失敗したら Spotify アプリでの再生を提案する */
 const SUGGEST_CONNECT_AFTER = 2;
 
@@ -57,10 +56,12 @@ export function FeedScreen({ services, settings, updateSettings, authStatus, onL
 
   const itemsRef = useRef(items);
   const activeRef = useRef(active);
+  const settingsRef = useRef(settings);
   useEffect(() => {
     itemsRef.current = items;
     activeRef.current = active;
-  }, [items, active]);
+    settingsRef.current = settings;
+  }, [items, active, settings]);
 
   const [deviceOpen, setDeviceOpen] = useState(false);
   const [suggestConnect, setSuggestConnect] = useState(false);
@@ -88,8 +89,13 @@ export function FeedScreen({ services, settings, updateSettings, authStatus, onL
       onLeave: (info: LeaveInfo) => {
         const id = trackIdFromUri(info.intent.uri);
         if (id === null) return;
-        if (info.playedMs > 0 && info.playedMs < SKIP_THRESHOLD_MS) engine.markSkipped(id);
-        else if (info.playedMs >= SKIP_THRESHOLD_MS) engine.markPlayed(id);
+        const advance = settingsRef.current.advance;
+        engine.markLeft(id, {
+          playedMs: info.playedMs,
+          durationMs: info.intent.durationMs,
+          cause: info.cause,
+          advanceAfterMs: advance === 'full' ? null : advance * 1000,
+        });
       },
       onError: (code, message) => {
         switch (code) {
@@ -149,9 +155,16 @@ export function FeedScreen({ services, settings, updateSettings, authStatus, onL
 
   // アクティブカードの確定。通常は意図と同じ曲なので controller 側で no-op。items が増えたときの先読みと補充もここで
   const commitAtRef = useRef<number | null>(null);
+  const prevActiveRef = useRef(active);
   useEffect(() => {
     commitAtRef.current = Date.now();
-  }, [active]);
+    // 前のカードに戻ってきたら、その曲への正のフィードバック
+    if (active < prevActiveRef.current) {
+      const item = itemsRef.current[active];
+      if (item !== undefined) engine.markReturned(item.id);
+    }
+    prevActiveRef.current = active;
+  }, [active, engine]);
   useEffect(() => {
     const item = items[active];
     if (item !== undefined && playback.started) {
@@ -181,7 +194,14 @@ export function FeedScreen({ services, settings, updateSettings, authStatus, onL
         intentToCommitMs: commitAtRef.current !== null && s.intentAt !== null && commitAtRef.current >= s.intentAt ? commitAtRef.current - s.intentAt : null,
       };
     };
-    window.__doomify = { goTo, scrollToIndex, snapshot: () => controller.snapshot(), timing };
+    window.__doomify = {
+      goTo,
+      scrollToIndex,
+      snapshot: () => controller.snapshot(),
+      timing,
+      feedStats: () => engine.feedStats(),
+      items: () => engine.items().map((i) => ({ id: i.id, name: i.track.name, artist: i.track.artists[0]?.name ?? '', reason: i.reason, detail: i.reasonDetail ?? null, bucket: i.bucket, strategy: i.strategy ?? null, hop: i.hop ?? null, saved: i.saved ?? null })),
+    };
     let loggedFor: number | null = null;
     const unsubscribe = controller.subscribe((s) => {
       if (s.startedAt === null || s.intentAt === null || loggedFor === s.intentAt) return;
@@ -200,7 +220,7 @@ export function FeedScreen({ services, settings, updateSettings, authStatus, onL
       unsubscribe();
       delete window.__doomify;
     };
-  }, [goTo, scrollToIndex, controller]);
+  }, [goTo, scrollToIndex, controller, engine]);
 
   useEffect(() => {
     return services.client.onRateLimit((info) => {
@@ -212,26 +232,24 @@ export function FeedScreen({ services, settings, updateSettings, authStatus, onL
     });
   }, [services.client, toast]);
 
-  // いいね
-  const [likedIds, setLikedIds] = useState<ReadonlySet<string>>(() => new Set(services.history.likedIds()));
+  // いいね: ユーザーの操作が最優先、無ければエンジンが判定した保存済みフラグ(item.saved)
+  const [likeOverrides, setLikeOverrides] = useState<ReadonlyMap<string, boolean>>(() => new Map(services.history.likedIds().map((id) => [id, true])));
+  const isLiked = useCallback((item: FeedItem) => likeOverrides.get(item.id) ?? item.saved === true, [likeOverrides]);
   const [likeBusyId, setLikeBusyId] = useState<string | null>(null);
   const like = useCallback(
     async (item: FeedItem) => {
-      const wasLiked = likedIds.has(item.id);
+      const wasLiked = isLiked(item);
       setLikeBusyId(item.id);
       try {
         if (wasLiked) {
           await services.api.removeFromLibrary([item.track.uri]);
-          setLikedIds((s) => {
-            const n = new Set(s);
-            n.delete(item.id);
-            return n;
-          });
+          engine.markUnliked(item.id);
+          setLikeOverrides((m) => new Map(m).set(item.id, false));
           toast('保存を取り消しました');
         } else {
           await services.api.saveToLibrary([item.track.uri]);
           engine.markLiked(item.id);
-          setLikedIds((s) => new Set(s).add(item.id));
+          setLikeOverrides((m) => new Map(m).set(item.id, true));
           toast('お気に入りの曲に保存しました');
         }
       } catch (e) {
@@ -240,8 +258,31 @@ export function FeedScreen({ services, settings, updateSettings, authStatus, onL
         setLikeBusyId(null);
       }
     },
-    [likedIds, services.api, engine, toast],
+    [isLiked, services.api, engine, toast],
   );
+
+  // 「こういうのをもっと」「これは違う」
+  const [marks, setMarks] = useState<ReadonlyMap<string, FeedbackMark>>(() => new Map());
+  const markOf = useCallback((item: FeedItem) => marks.get(item.id) ?? null, [marks]);
+  const more = useCallback(
+    (item: FeedItem) => {
+      engine.markMore(item.id);
+      setMarks((m) => new Map(m).set(item.id, 'more'));
+      toast('こういう曲を増やします');
+    },
+    [engine, toast],
+  );
+  const less = useCallback(
+    (item: FeedItem) => {
+      engine.markLess(item.id);
+      setMarks((m) => new Map(m).set(item.id, 'less'));
+      toast('このアーティストはしばらく出しません');
+      const index = itemsRef.current.indexOf(item);
+      if (index !== -1 && index === activeRef.current) goTo(index + 1);
+    },
+    [engine, toast, goTo],
+  );
+  const open = useCallback((item: FeedItem) => engine.markOpened(item.id), [engine]);
 
   const activeItem = items[active];
   const togglePause = useCallback(() => void controller.togglePause(), [controller]);
@@ -304,7 +345,8 @@ export function FeedScreen({ services, settings, updateSettings, authStatus, onL
         items={items}
         active={active}
         snapshot={snapshot}
-        likedIds={likedIds}
+        isLiked={isLiked}
+        markOf={markOf}
         likeBusyId={likeBusyId}
         isMobile={env.isMobile}
         loading={status.loading}
@@ -314,6 +356,9 @@ export function FeedScreen({ services, settings, updateSettings, authStatus, onL
         onTogglePause={togglePause}
         onLike={(item) => void like(item)}
         onAddToPlaylist={setPlaylistTarget}
+        onOpen={open}
+        onMore={more}
+        onLess={less}
         onRestart={() => {
           void engine.restart().then(() => scrollToIndex(0, 'instant'));
         }}
@@ -347,6 +392,7 @@ export function FeedScreen({ services, settings, updateSettings, authStatus, onL
         services={services}
         track={playlistTarget?.track ?? null}
         onDone={(message) => {
+          if (playlistTarget !== null) engine.markAddedToPlaylist(playlistTarget.id);
           setPlaylistTarget(null);
           toast(message);
         }}
@@ -356,11 +402,13 @@ export function FeedScreen({ services, settings, updateSettings, authStatus, onL
         open={settingsOpen}
         settings={settings}
         authNote={authNote}
+        stats={settingsOpen ? engine.feedStats() : null}
         onUpdate={updateSettings}
         onResetHistory={() => {
           setSettingsOpen(false);
           void engine.reset().then(() => {
-            setLikedIds(new Set());
+            setLikeOverrides(new Map());
+            setMarks(new Map());
             scrollToIndex(0, 'instant');
             toast('履歴を消して、フィードを作り直しました');
           });

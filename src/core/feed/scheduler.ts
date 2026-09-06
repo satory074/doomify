@@ -2,7 +2,7 @@
  *  - bucketWeights: 発見度 d からバケット(known/adjacent/discover)の抽選重みを決める
  *  - planRefill: 予算(API 呼び出し回数)内で、足りないバケットを埋める戦略の並びを決める
  *  - 重複判定・同一アーティスト間隔 */
-import type { Track } from '../spotify/types';
+import type { AlbumRef, Track } from '../spotify/types';
 import { pickWeighted, type Rng } from './rng';
 import type { Bucket } from './types';
 
@@ -11,6 +11,9 @@ export type Strategy =
   | 'playlist_random'
   | 'deep_cut'
   | 'appears_on'
+  | 'similar_artist'
+  | 'bridge'
+  | 'similar_track'
   | 'genre_search'
   | 'tag_new'
   | 'tag_hipster';
@@ -20,17 +23,23 @@ export const ALL_STRATEGIES: readonly Strategy[] = [
   'playlist_random',
   'deep_cut',
   'appears_on',
+  'similar_artist',
+  'bridge',
+  'similar_track',
   'genre_search',
   'tag_new',
   'tag_hipster',
 ];
 
-/** 戦略 1 回あたりの API 呼び出し回数 */
+/** 戦略 1 回あたりの Spotify API 呼び出し回数(外部 API は数えない) */
 export const STRATEGY_COST: Record<Strategy, number> = {
   saved_random: 1,
   playlist_random: 1,
   deep_cut: 2,
   appears_on: 2,
+  similar_artist: 1,
+  bridge: 1,
+  similar_track: 2,
   genre_search: 1,
   tag_new: 2,
   tag_hipster: 2,
@@ -41,6 +50,9 @@ export const STRATEGY_BUCKET: Record<Strategy, Bucket> = {
   playlist_random: 'known',
   deep_cut: 'adjacent',
   appears_on: 'adjacent',
+  similar_artist: 'discover',
+  bridge: 'discover',
+  similar_track: 'discover',
   genre_search: 'discover',
   tag_new: 'discover',
   tag_hipster: 'discover',
@@ -52,6 +64,9 @@ export const EXPECTED_YIELD: Record<Strategy, number> = {
   playlist_random: 30,
   deep_cut: 4,
   appears_on: 5,
+  similar_artist: 4,
+  bridge: 3,
+  similar_track: 2,
   genre_search: 8,
   tag_new: 3,
   tag_hipster: 3,
@@ -59,12 +74,15 @@ export const EXPECTED_YIELD: Record<Strategy, number> = {
 
 const BUCKETS: readonly Bucket[] = ['known', 'adjacent', 'discover'];
 
-/** 1 回の計画で同じ戦略を使える回数(安価で収量の多い検索だけ 2 回) */
+/** 1 回の計画で同じ戦略を使える回数(安価で収量の多いものだけ 2 回) */
 export const MAX_PER_PLAN: Record<Strategy, number> = {
   saved_random: 1,
   playlist_random: 1,
   deep_cut: 1,
   appears_on: 1,
+  similar_artist: 2,
+  bridge: 1,
+  similar_track: 1,
   genre_search: 2,
   tag_new: 1,
   tag_hipster: 1,
@@ -91,6 +109,10 @@ export interface PlanInput {
   /** 直前に使った戦略(同じものの連発を避ける) */
   recent: readonly Strategy[];
   rng: Rng;
+  /** バンディットがサンプルした戦略の重み θ(既定 1) */
+  strategyWeight?: (s: Strategy) => number;
+  /** 補充しないバケット(クールダウン中の discover など) */
+  excludeBuckets?: readonly Bucket[];
 }
 
 export function planRefill(input: PlanInput): Strategy[] {
@@ -105,12 +127,14 @@ export function planRefill(input: PlanInput): Strategy[] {
   const byBucket: Record<Bucket, Strategy[]> = {
     known: ['saved_random', 'playlist_random'],
     adjacent: ['deep_cut', 'appears_on'],
-    discover: ['genre_search', 'tag_new', 'tag_hipster'],
+    discover: ['similar_artist', 'similar_track', 'bridge', 'genre_search', 'tag_new', 'tag_hipster'],
   };
+  const excluded = new Set(input.excludeBuckets ?? []);
+  const theta = input.strategyWeight ?? (() => 1);
   const plan: Strategy[] = [];
   let budget = input.budget;
   for (let guard = 0; guard < 12 && budget > 0; guard++) {
-    const candidates = BUCKETS.filter((b) => deficit[b] > 0 && weights[b] > 0);
+    const candidates = BUCKETS.filter((b) => deficit[b] > 0 && weights[b] > 0 && !excluded.has(b));
     if (candidates.length === 0) break;
     const bucket = pickWeighted(input.rng, candidates, (b) => deficit[b] * weights[b]) ?? candidates[0];
     if (bucket === undefined) break;
@@ -122,7 +146,7 @@ export function planRefill(input: PlanInput): Strategy[] {
       continue;
     }
     const fresh = options.filter((s) => !input.recent.includes(s));
-    const strategy = pickWeighted(input.rng, fresh.length > 0 ? fresh : options, (s) => EXPECTED_YIELD[s] / STRATEGY_COST[s]);
+    const strategy = pickWeighted(input.rng, fresh.length > 0 ? fresh : options, (s) => Math.max(0.01, theta(s)) * (EXPECTED_YIELD[s] / STRATEGY_COST[s]));
     if (strategy === undefined) break;
     plan.push(strategy);
     budget -= STRATEGY_COST[strategy];
@@ -143,6 +167,16 @@ export function normalizeTitle(name: string): string {
 
 export function dedupeKey(track: Pick<Track, 'name' | 'artists'>): string {
   return `${normalizeTitle(track.name)}|${track.artists[0]?.id ?? ''}`;
+}
+
+/** 直近 n 枚に同じアルバムがあれば true(禁止ではなく減点に使う) */
+export function sameAlbumRecently(
+  track: { album: Pick<AlbumRef, 'id'> },
+  recent: readonly { track: { album: Pick<AlbumRef, 'id'> } }[],
+  n: number,
+): boolean {
+  if (n <= 0) return false;
+  return recent.slice(-n).some((it) => it.track.album.id === track.album.id);
 }
 
 /** 直近 spacing 枚に同じアーティストがいれば true */

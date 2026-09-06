@@ -4,18 +4,33 @@
 import { getEntry, setWithTtl, type KeyValueStore } from '../spotify/cache';
 import type { SpotifyApi } from '../spotify/endpoints';
 import type { Artist, CurrentUser, FollowedArtists, Paging, PlayHistoryItem, Playlist, SavedTrackItem, Track } from '../spotify/types';
-import type { FeedReason } from './types';
+import type { Strategy } from './scheduler';
+import type { FeedReason, SeedRef } from './types';
 
 export interface Candidate {
   track: Track;
   reason: FeedReason;
   reasonDetail?: string;
+  /** 候補を作った戦略 */
+  strategy?: Strategy;
+  /** 類似・橋渡しの元になった種 */
+  seed?: SeedRef;
+  /** 種からの距離(0: 既知、1: 類似、2: 類似の類似) */
+  hop?: number;
+  /** 類似度 0..1(類似順位から。無ければ既定値で扱う) */
+  similarity?: number;
 }
 
 export interface SeedArtist {
   id: string;
   name: string;
   weight: number;
+  /** 種からの距離(既定 0 = ユーザー自身のデータ由来) */
+  hop?: number;
+  /** MusicBrainz ID(解決済みなら) */
+  mbid?: string;
+  /** hop ≥ 1 のとき、たどってきた元の種 */
+  from?: SeedRef;
 }
 
 export interface OwnPlaylist {

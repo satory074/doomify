@@ -6,9 +6,11 @@
 import { createStore, del, get, keys, set, type UseStore } from 'idb-keyval';
 
 export const MAX_TTL_MS = 24 * 60 * 60 * 1000;
+/** Spotify 以外(MusicBrainz / ListenBrainz の ID・類似・タグ)の上限。Spotify コンテンツは含めない */
+export const EXTERNAL_MAX_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
-export function clampTtl(ttlMs: number): number {
-  return Math.min(Math.max(0, ttlMs), MAX_TTL_MS);
+export function clampTtl(ttlMs: number, maxTtlMs: number = MAX_TTL_MS): number {
+  return Math.min(Math.max(0, ttlMs), maxTtlMs);
 }
 
 export class SyncTtlCache {
@@ -89,9 +91,15 @@ export interface CacheHit<T> {
   ageMs: number;
 }
 
-/** TTL 付きエントリを読む。期限切れでも保存から maxAgeMs(既定・上限 24h)以内なら stale として返す。
+/** TTL 付きエントリを読む。期限切れでも保存から maxAgeMs(既定・上限 24h。外部データは maxTtlMs で緩和)以内なら stale として返す。
  *  読み出しでは削除しない(setWithTtl が上書きする) */
-export async function getEntry<T>(store: KeyValueStore, key: string, now: number, maxAgeMs: number = MAX_TTL_MS): Promise<CacheHit<T> | undefined> {
+export async function getEntry<T>(
+  store: KeyValueStore,
+  key: string,
+  now: number,
+  maxAgeMs: number = MAX_TTL_MS,
+  maxTtlMs: number = MAX_TTL_MS,
+): Promise<CacheHit<T> | undefined> {
   const entry = await store.get<TtlEntry<T>>(key);
   if (entry === undefined || typeof entry !== 'object' || entry === null) return undefined;
   if (typeof entry.expiresAt !== 'number') return undefined;
@@ -99,7 +107,7 @@ export async function getEntry<T>(store: KeyValueStore, key: string, now: number
   const ageMs = storedAt === null ? 0 : Math.max(0, now - storedAt);
   if (entry.expiresAt > now) return { value: entry.value, fresh: true, ageMs };
   if (storedAt === null) return undefined;
-  if (now - storedAt > clampTtl(maxAgeMs)) return undefined;
+  if (now - storedAt > clampTtl(maxAgeMs, maxTtlMs)) return undefined;
   return { value: entry.value, fresh: false, ageMs };
 }
 
@@ -108,7 +116,14 @@ export async function getFresh<T>(store: KeyValueStore, key: string, now: number
   return hit !== undefined && hit.fresh ? hit.value : undefined;
 }
 
-export async function setWithTtl<T>(store: KeyValueStore, key: string, value: T, ttlMs: number, now: number): Promise<void> {
-  const entry: TtlEntry<T> = { value, expiresAt: now + clampTtl(ttlMs), storedAt: now };
+export async function setWithTtl<T>(
+  store: KeyValueStore,
+  key: string,
+  value: T,
+  ttlMs: number,
+  now: number,
+  maxTtlMs: number = MAX_TTL_MS,
+): Promise<void> {
+  const entry: TtlEntry<T> = { value, expiresAt: now + clampTtl(ttlMs, maxTtlMs), storedAt: now };
   await store.set(key, entry);
 }

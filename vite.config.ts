@@ -46,6 +46,8 @@ export default defineConfig({
           // API 応答・認可・SDK スクリプトはキャッシュしない
           { urlPattern: /^https:\/\/(api|accounts)\.spotify\.com\//, handler: 'NetworkOnly' },
           { urlPattern: /^https:\/\/sdk\.scdn\.co\//, handler: 'NetworkOnly' },
+          // 外部メタデータ(MusicBrainz / ListenBrainz)はアプリ側で IndexedDB にキャッシュするので SW では触らない
+          { urlPattern: /^https:\/\/(musicbrainz\.org|api\.listenbrainz\.org|labs\.api\.listenbrainz\.org)\//, handler: 'NetworkOnly' },
         ],
       },
     }),

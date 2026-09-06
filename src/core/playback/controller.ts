@@ -70,6 +70,8 @@ export interface LeaveInfo {
   intent: TrackIntent;
   /** この曲が実際に鳴っていた時間 ms */
   playedMs: number;
+  /** auto_advance: 自動送り(一定時間 or 曲終了)で離れた。user: スワイプなどの操作 */
+  cause: 'user' | 'auto_advance';
 }
 
 export interface PlaybackController {
@@ -372,7 +374,8 @@ export function createPlaybackController(deps: ControllerDeps): PlaybackControll
       if (intent !== null) {
         const playedMs = startedAt === null ? 0 : Math.max(0, now() - startedAt);
         const leaving = intent;
-        for (const cb of leaveCbs) cb({ intent: leaving, playedMs });
+        const cause = advanced ? 'auto_advance' : 'user';
+        for (const cb of leaveCbs) cb({ intent: leaving, playedMs, cause });
       }
       clearTimers();
       abort?.abort();

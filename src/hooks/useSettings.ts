@@ -10,6 +10,10 @@ export interface Settings {
   /** 発見度 0..1 */
   discovery: number;
   genres: string[];
+  /** MusicBrainz / ListenBrainz で類似アーティストとタグを探す(アーティスト名と ISRC が送られる) */
+  externalSources: boolean;
+  /** 自動検出したジャンルのうち使わないもの */
+  excludedTags: string[];
   playbackTarget: 'sdk' | 'connect';
   connectDeviceId: string | null;
   connectDeviceName: string | null;
@@ -20,6 +24,8 @@ export const DEFAULT_SETTINGS: Settings = {
   advance: 60,
   discovery: 0.5,
   genres: [],
+  externalSources: true,
+  excludedTags: [],
   playbackTarget: 'sdk',
   connectDeviceId: null,
   connectDeviceName: null,
@@ -48,7 +54,7 @@ export function toPlaybackSettings(s: Settings): PlaybackSettings {
 }
 
 export function toFeedSettings(s: Settings): FeedSettings {
-  return { discovery: s.discovery, genres: s.genres };
+  return { discovery: s.discovery, genres: s.genres, externalSources: s.externalSources, excludedTags: s.excludedTags };
 }
 
 export function useSettings(): [Settings, (patch: Partial<Settings>) => void] {

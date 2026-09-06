@@ -6,6 +6,8 @@ import {
   dedupeKey,
   normalizeTitle,
   planRefill,
+  sameAlbumRecently,
+  STRATEGY_BUCKET,
   STRATEGY_COST,
   violatesArtistSpacing,
   type PlanInput,
@@ -47,7 +49,7 @@ describe('planRefill', () => {
       const cost = plan.reduce((a, s) => a + STRATEGY_COST[s], 0);
       expect(cost).toBeLessThanOrEqual(6);
       const dupes = plan.filter((s, i) => plan.indexOf(s) !== i);
-      expect(dupes.every((s) => s === 'genre_search')).toBe(true);
+      expect(dupes.every((s) => s === 'genre_search' || s === 'similar_artist')).toBe(true);
       expect(plan.length).toBeGreaterThan(0);
     }
   });
@@ -70,6 +72,20 @@ describe('planRefill', () => {
     );
     expect(plan).toEqual(['playlist_random']);
     expect(planRefill(input({ discovery: 0, poolSizes: { known: 100, adjacent: 0, discover: 0 } }))).toEqual([]);
+  });
+  it('excludeBuckets のバケットは補充せず、strategyWeight が 0 に近い戦略は選ばれにくい', () => {
+    for (let seed = 0; seed < 20; seed++) {
+      const plan = planRefill(input({ discovery: 1, excludeBuckets: ['discover'], rng: mulberry32(seed) }));
+      expect(plan.every((s) => STRATEGY_BUCKET[s] !== 'discover')).toBe(true);
+    }
+    let similar = 0;
+    for (let seed = 0; seed < 40; seed++) {
+      const plan = planRefill(
+        input({ discovery: 1, rng: mulberry32(seed), strategyWeight: (s) => (s === 'similar_artist' ? 1 : 0.001) }),
+      );
+      if (plan.includes('similar_artist')) similar++;
+    }
+    expect(similar).toBeGreaterThan(35);
   });
 });
 
@@ -98,5 +114,15 @@ describe('violatesArtistSpacing', () => {
     expect(violatesArtistSpacing(t, recent, 5)).toBe(true);
     expect(violatesArtistSpacing(t, recent, 2)).toBe(false);
     expect(violatesArtistSpacing(t, recent, 0)).toBe(false);
+  });
+});
+
+describe('sameAlbumRecently', () => {
+  it('直近 n 枚だけを見る', () => {
+    const item = (id: string) => ({ track: { album: { id } } });
+    const recent = [item('x'), item('a'), item('y')];
+    expect(sameAlbumRecently({ album: { id: 'a' } }, recent, 3)).toBe(true);
+    expect(sameAlbumRecently({ album: { id: 'a' } }, recent, 1)).toBe(false);
+    expect(sameAlbumRecently({ album: { id: 'a' } }, recent, 0)).toBe(false);
   });
 });

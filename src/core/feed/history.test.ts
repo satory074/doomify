@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MemoryStore } from '../spotify/cache';
-import { createHistory, FLUSH_DELAY_MS, HISTORY_KEY, SEEN_TTL_MS, type HistoryData } from './history';
+import { createHistory, FLUSH_DELAY_MS, HISTORY_KEY, migrateHistory, SEEN_TTL_MS, type HistoryData } from './history';
 
 beforeEach(() => vi.useFakeTimers());
 afterEach(() => vi.useRealTimers());
@@ -56,5 +56,55 @@ describe('createHistory', () => {
     await h.reset();
     expect(h.size()).toBe(0);
     expect(await store.get(HISTORY_KEY)).toBeUndefined();
+  });
+});
+
+describe('feedback(v2)', () => {
+  it('報酬でアーティスト・タグ・種・戦略を学習し、seen の action を導く', () => {
+    const h = createHistory(new MemoryStore());
+    h.feedback({ trackId: 't1', reward: 1, artistIds: ['a1'], tags: ['j-pop', 'anime', 'pop', 'extra'], seedId: 's1', strategy: 'similar_artist', bucket: 'discover', liked: true, now: 1 });
+    expect(h.affinity('a1')).toBeCloseTo(2);
+    expect(h.tagAffinity('j-pop')).toBeCloseTo(0.5);
+    expect(h.tagAffinity('extra')).toBe(0);
+    expect(h.seedAffinity('s1')).toBeCloseTo(0.5);
+    expect(h.strategyStats().similar_artist?.a).toBeGreaterThan(3);
+    expect(h.actionOf('t1')).toBe('liked');
+    h.feedback({ trackId: 't1', reward: -1, artistIds: ['a1'], now: 2 });
+    expect(h.actionOf('t1')).toBe('liked');
+    h.feedback({ trackId: 't2', reward: -1, artistIds: ['a1'], strategy: 'tag_hipster', bucket: 'discover', now: 3 });
+    expect(h.actionOf('t2')).toBe('skipped');
+    expect(h.strategyStats().tag_hipster?.b).toBeGreaterThan(3);
+    h.feedback({ trackId: 't3', reward: 0, artistIds: [], now: 4 });
+    expect(h.actionOf('t3')).toBe('played');
+    expect(h.recent()).toHaveLength(4);
+    h.feedback({ trackId: 't1', reward: -0.5, artistIds: [], unliked: true, now: 5 });
+    expect(h.actionOf('t1')).toBe('played');
+    expect(h.likedIds()).toEqual([]);
+  });
+
+  it('avoid / deadTag は期限つき、exploration は保存される', async () => {
+    const store = new MemoryStore();
+    const h = createHistory(store);
+    h.avoid('a9', 100);
+    h.markDeadTag('weird', 100);
+    h.setExploration({ ema: 0.4, earlySkipStreak: 1, cooldownLeft: 2 });
+    expect(h.isAvoided('a9', 50)).toBe(true);
+    expect(h.isAvoided('a9', 100)).toBe(false);
+    expect(h.isDeadTag('weird', 99)).toBe(true);
+    await h.flush();
+    const h2 = createHistory(store);
+    await h2.load();
+    expect(h2.exploration()).toEqual({ ema: 0.4, earlySkipStreak: 1, cooldownLeft: 2 });
+  });
+
+  it('v1 の保存データを v2 に移行する', () => {
+    const migrated = migrateHistory({ version: 1, seen: { t1: { at: 1, action: 'liked' } }, artistAffinity: { a1: 2 } });
+    expect(migrated?.version).toBe(2);
+    expect(migrated?.seen.t1?.action).toBe('liked');
+    expect(migrated?.artistAffinity.a1).toBe(2);
+    expect(migrated?.tagAffinity).toEqual({});
+    expect(migrated?.exploration.cooldownLeft).toBe(0);
+    expect(migrateHistory({ version: 3, seen: {} })).toBeNull();
+    expect(migrateHistory('junk')).toBeNull();
   });
 });

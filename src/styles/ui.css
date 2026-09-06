@@ -412,3 +412,26 @@
   display: grid;
   gap: 4px;
 }
+
+/* 設定の「発見の様子」 */
+.diag-list {
+  margin: 0;
+  display: grid;
+  gap: 8px;
+  font-size: 13px;
+}
+
+.diag-list > div {
+  display: grid;
+  gap: 2px;
+}
+
+.diag-list dt {
+  color: var(--ink-3);
+}
+
+.diag-list dd {
+  margin: 0;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}

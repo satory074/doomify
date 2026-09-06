@@ -50,8 +50,15 @@ export interface YearRange {
   to: number;
 }
 
-/** 年代レンジ。新しいほど重くする */
-export function pickYearRange(rng: Rng, currentYear: number): YearRange | null {
+export interface WeightedGenre {
+  genre: string;
+  weight: number;
+  /** tag: 聴取データ由来(ListenBrainz のタグ)、chip: ユーザーが設定で選んだ */
+  source?: 'tag' | 'chip';
+}
+
+/** 年代レンジ。新しいほど重くする。eraShare(そのレンジに入る既知曲の割合 0..1)があれば、聴いている年代を厚くする */
+export function pickYearRange(rng: Rng, currentYear: number, eraShare?: (range: YearRange) => number): YearRange | null {
   const ranges: { range: YearRange | null; weight: number }[] = [
     { range: null, weight: 3 }, // 指定なし
     { range: { from: currentYear - 1, to: currentYear }, weight: 3 },
@@ -62,13 +69,29 @@ export function pickYearRange(rng: Rng, currentYear: number): YearRange | null {
     { range: { from: 1980, to: 1989 }, weight: 1 },
     { range: { from: 1970, to: 1979 }, weight: 0.6 },
   ];
-  return pickWeighted(rng, ranges, (r) => r.weight)?.range ?? null;
+  const weightOf = (r: { range: YearRange | null; weight: number }) =>
+    r.range === null || eraShare === undefined ? r.weight : r.weight * (0.3 + 3 * Math.min(1, Math.max(0, eraShare(r.range))));
+  return pickWeighted(rng, ranges, weightOf)?.range ?? null;
 }
 
 export function pickGenre(rng: Rng, preferred: readonly string[], fallback: readonly string[] = DEFAULT_GENRES): string | undefined {
   // 好みのジャンルがあれば 3/4 の確率でそこから、残りは全体から(マンネリ防止)
   if (preferred.length > 0 && rng() < 0.75) return pickOne(rng, preferred);
   return pickOne(rng, fallback);
+}
+
+/** 個人化されたジャンル(タグ重み)があれば 3/4 の確率で重み付き抽選、残りは語彙全体から */
+export function pickWeightedGenre(
+  rng: Rng,
+  weighted: readonly WeightedGenre[],
+  fallback: readonly string[] = DEFAULT_GENRES,
+): { genre: string; personalized: boolean; source?: 'tag' | 'chip' } | undefined {
+  if (weighted.length > 0 && rng() < 0.75) {
+    const w = pickWeighted(rng, weighted, (g) => g.weight);
+    if (w !== undefined) return { genre: w.genre, personalized: true, source: w.source };
+  }
+  const g = pickOne(rng, fallback);
+  return g === undefined ? undefined : { genre: g, personalized: false };
 }
 
 /** search の q に使う形。ジャンル名にスペースがあるので引用符で囲む */

@@ -9,9 +9,11 @@ interface Props {
   isMobile: boolean;
   onLike: () => void;
   onAddToPlaylist: () => void;
+  /** 「Spotify で開く」を押した(強い正のフィードバック) */
+  onOpen: () => void;
 }
 
-export function CardActions({ track, liked, busy, isMobile, onLike, onAddToPlaylist }: Props) {
+export function CardActions({ track, liked, busy, isMobile, onLike, onAddToPlaylist, onOpen }: Props) {
   const openUrl = SPOTIFY_TRACK_URL(track.id);
   return (
     <div className="actions">
@@ -38,6 +40,7 @@ export function CardActions({ track, liked, busy, isMobile, onLike, onAddToPlayl
         target="_blank"
         rel="noopener noreferrer"
         onClick={(e) => {
+          onOpen();
           if (!isMobile) return;
           // スマホではまずアプリを開く。失敗しても href の Web 版へ
           e.preventDefault();

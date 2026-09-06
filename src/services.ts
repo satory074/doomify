@@ -7,6 +7,8 @@ import { createIdbStore, type KeyValueStore } from './core/spotify/cache';
 import type { PlaybackTarget } from './core/playback/types';
 import { createSpotifyApi, type SpotifyApi } from './core/spotify/endpoints';
 import { createDemoServices, isDemo } from './demo';
+import { createListenBrainzClient, type ListenBrainzClient } from './core/external/listenbrainz';
+import { createMusicBrainzClient, type MusicBrainzClient } from './core/external/musicbrainz';
 
 export interface Services {
   auth: AuthManager;
@@ -15,6 +17,8 @@ export interface Services {
   store: KeyValueStore;
   history: History;
   redirectUri: string;
+  /** 類似アーティスト・タグの外部情報源(MusicBrainz / ListenBrainz)。設定で OFF にできる */
+  external: { mb: MusicBrainzClient; lb: ListenBrainzClient } | null;
   /** デモモードのときだけ。usePlayback がこれを使う */
   demoTarget?: PlaybackTarget;
 }
@@ -39,6 +43,7 @@ export function getServices(): Services {
   const api = createSpotifyApi(client);
   const store = createIdbStore();
   const history = createHistory(store);
-  services = { auth, client, api, store, history, redirectUri: uri };
+  const external = { mb: createMusicBrainzClient(), lb: createListenBrainzClient() };
+  services = { auth, client, api, store, history, redirectUri: uri, external };
   return services;
 }

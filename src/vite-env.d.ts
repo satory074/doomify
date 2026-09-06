@@ -1,3 +1,4 @@
+import type { FeedStats } from './core/feed/feedEngine';
 import type { ControllerSnapshot } from './core/playback/controller';
 
 declare global {
@@ -9,6 +10,10 @@ declare global {
       snapshot: () => ControllerSnapshot;
       /** 直近の意図についての遅延の内訳(ms) */
       timing: () => Record<string, number | string | null>;
+      /** フィードの学習状態(戦略の当たり率・探索量・外部データ) */
+      feedStats: () => FeedStats;
+      /** items の要約(理由・戦略・種) */
+      items: () => Record<string, string | number | boolean | null>[];
     };
   }
 }

@@ -4,7 +4,7 @@
 import { createAuthManager } from './core/auth/authManager';
 import { MemoryStorage } from './core/auth/tokenStore';
 import { createHistory } from './core/feed/history';
-import { createFakeApi } from './core/feed/testApi';
+import { createFakeApi, createFakeExternal } from './core/feed/testApi';
 import type { PlaybackState, PlaybackTarget, TargetEvent } from './core/playback/types';
 import type { ApiClient } from './core/spotify/apiClient';
 import { MemoryStore } from './core/spotify/cache';
@@ -96,6 +96,7 @@ export function createDemoServices(): Services {
     store,
     history: createHistory(store),
     redirectUri: '',
+    external: createFakeExternal(),
     demoTarget: createDemoTarget(),
   };
 }

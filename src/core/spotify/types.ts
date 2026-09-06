@@ -44,11 +44,16 @@ export interface SimplifiedTrack {
   is_playable?: boolean;
   is_local?: boolean;
   type?: string;
+  disc_number?: number;
+  track_number?: number;
+  restrictions?: { reason?: string };
 }
 
 export interface Track extends SimplifiedTrack {
   album: AlbumRef;
   external_urls?: { spotify?: string };
+  /** ISRC など。2026-03 に削除が撤回され引き続き返る(MusicBrainz の録音引きに使う) */
+  external_ids?: { isrc?: string; ean?: string; upc?: string };
 }
 
 export interface Paging<T> {

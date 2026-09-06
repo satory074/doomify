@@ -4,14 +4,15 @@ import type { ControllerSnapshot } from '../core/playback/controller';
 import { pickImage } from '../core/spotify/types';
 import { useCoverPalette } from '../hooks/useCoverPalette';
 import { CardShell } from './CardShell';
-import { TrackCard } from './TrackCard';
+import { TrackCard, type FeedbackMark } from './TrackCard';
 
 interface Props {
   containerRef: React.RefObject<HTMLDivElement | null>;
   items: readonly FeedItem[];
   active: number;
   snapshot: ControllerSnapshot;
-  likedIds: ReadonlySet<string>;
+  isLiked: (item: FeedItem) => boolean;
+  markOf: (item: FeedItem) => FeedbackMark | null;
   likeBusyId: string | null;
   isMobile: boolean;
   loading: boolean;
@@ -21,6 +22,9 @@ interface Props {
   onTogglePause: () => void;
   onLike: (item: FeedItem) => void;
   onAddToPlaylist: (item: FeedItem) => void;
+  onOpen: (item: FeedItem) => void;
+  onMore: (item: FeedItem) => void;
+  onLess: (item: FeedItem) => void;
   onRestart: () => void;
   onRetry: () => void;
 }
@@ -108,13 +112,17 @@ function FeedCard(props: Props & { item: FeedItem; index: number; render: boolea
           item={item}
           active={isActive}
           snapshot={isActive ? props.snapshot : null}
-          liked={props.likedIds.has(item.id)}
+          liked={props.isLiked(item)}
           likeBusy={props.likeBusyId === item.id}
+          mark={props.markOf(item)}
           isMobile={props.isMobile}
           eager={Math.abs(index - active) <= 1}
           onTogglePause={props.onTogglePause}
           onLike={() => props.onLike(item)}
           onAddToPlaylist={() => props.onAddToPlaylist(item)}
+          onOpen={() => props.onOpen(item)}
+          onMore={() => props.onMore(item)}
+          onLess={() => props.onLess(item)}
         />
       ) : null}
     </CardShell>

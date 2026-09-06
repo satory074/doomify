@@ -418,3 +418,46 @@
 .gate-alt {
   color: var(--ink-2);
 }
+
+/* 理由ラベルと「もっと / 違う」 */
+.reason-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.reason-row .card-reason {
+  margin: 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.feedback-chips {
+  display: inline-flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.chip-mini {
+  min-height: 26px;
+  padding: 0 10px;
+  border-radius: 13px;
+  font-size: 12px;
+  max-width: none;
+}
+
+.chip-mini[aria-pressed='true'] {
+  background: var(--ink);
+  border-color: var(--ink);
+  color: var(--ground);
+}
+
+.chip-mini:disabled {
+  opacity: 0.9;
+  cursor: default;
+}

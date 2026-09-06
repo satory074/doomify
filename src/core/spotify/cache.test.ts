@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { clampTtl, getEntry, getFresh, MAX_TTL_MS, MemoryStore, setWithTtl, SyncTtlCache } from './cache';
+import { clampTtl, EXTERNAL_MAX_TTL_MS, getEntry, getFresh, MAX_TTL_MS, MemoryStore, setWithTtl, SyncTtlCache } from './cache';
 
 const HOUR = 3_600_000;
 
@@ -63,5 +63,16 @@ describe('getEntry(stale-while-revalidate)', () => {
     expect(await getEntry(s, 'broken', 0)).toBeUndefined();
     expect(await getEntry(s, 'noexp', 0)).toBeUndefined();
     expect(await getEntry(s, 'missing', 0)).toBeUndefined();
+  });
+});
+
+describe('外部データの長い TTL', () => {
+  it('maxTtlMs を渡すと 24h を超えて fresh のまま', async () => {
+    const store = new MemoryStore();
+    const day = 24 * 60 * 60 * 1000;
+    await setWithTtl(store, 'ext', { v: 1 }, 30 * day, 0, EXTERNAL_MAX_TTL_MS);
+    expect((await getEntry(store, 'ext', 10 * day, day, EXTERNAL_MAX_TTL_MS))?.fresh).toBe(true);
+    await setWithTtl(store, 'sp', { v: 1 }, 30 * day, 0);
+    expect((await getEntry(store, 'sp', 10 * day))).toBeUndefined();
   });
 });

@@ -1,34 +1,60 @@
 import { describe, expect, it, vi } from 'vitest';
 import { getEntry, MemoryStore } from '../spotify/cache';
-import { createFeedEngine, FEED_CONSTANTS, type FeedEngine, type FeedSettings } from './feedEngine';
+import type { SpotifyApi } from '../spotify/endpoints';
+import { createEnrichment, type Enrichment } from './enrichment';
+import { COOLDOWN_CARDS } from './exploration';
+import { createFeedEngine, FEED_CONSTANTS, type FeedConstants, type FeedEngine, type FeedSettings } from './feedEngine';
 import { createHistory, type History } from './history';
+import type { LeaveSignal } from './reward';
 import { mulberry32 } from './rng';
 import { dedupeKey } from './scheduler';
 import { loadSeeds, SEED_SOURCE_COUNT, seedCacheKey } from './sources';
-import { createFakeApi } from './testApi';
+import { createFakeApi, createFakeExternal } from './testApi';
+import { reasonLabel } from './types';
 
 const NOW = 1_700_000_000_000;
 const HOUR = 3_600_000;
+/** 偽 API の種に出てくる既知アーティスト(top/saved/recent の a0..a6、トップアーティスト、フォロー) */
+const KNOWN_ARTIST_IDS = new Set(['a0', 'a1', 'a2', 'a3', 'a4', 'a5', 'a6', 'f1', 'f2']);
 
 function setup(
-  opts: { discovery?: number; rateLimited?: boolean; seed?: number; maxItems?: number; history?: History; delay?: (call: string) => number } = {},
+  opts: {
+    discovery?: number;
+    rateLimited?: boolean;
+    seed?: number;
+    maxItems?: number;
+    history?: History;
+    delay?: (call: string) => number;
+    external?: boolean;
+    externalSources?: boolean;
+    constants?: Partial<FeedConstants>;
+    api?: Partial<SpotifyApi>;
+  } = {},
 ) {
-  const { api, calls } = createFakeApi({}, { delay: opts.delay });
+  const { api, calls } = createFakeApi(opts.api ?? {}, { delay: opts.delay });
   const store = new MemoryStore();
   const history = opts.history ?? createHistory(new MemoryStore());
-  const settings: FeedSettings = { discovery: opts.discovery ?? 0.5, genres: ['j-pop'] };
+  const settings: FeedSettings = { discovery: opts.discovery ?? 0.5, genres: ['j-pop'], externalSources: opts.externalSources ?? true, excludedTags: [] };
+  const ext = createFakeExternal();
+  const enrichment: Enrichment | null =
+    opts.external === true ? createEnrichment({ ...ext, store, now: () => NOW, enabled: () => settings.externalSources !== false }) : null;
   const engine = createFeedEngine({
     api,
     store,
     history,
     settings: () => settings,
+    enrichment,
     rng: mulberry32(opts.seed ?? 1),
     now: () => NOW,
     isRateLimited: () => opts.rateLimited ?? false,
-    constants: opts.maxItems !== undefined ? { maxItems: opts.maxItems } : undefined,
+    constants: { ...(opts.maxItems !== undefined ? { maxItems: opts.maxItems } : {}), ...opts.constants },
   });
-  return { engine, calls, history, store, api };
+  return { engine, calls, history, store, api, enrichment, externalCalls: ext.calls, settings };
 }
+
+const leave = (over: Partial<LeaveSignal> = {}): LeaveSignal => ({ playedMs: 20_000, durationMs: 200_000, cause: 'user', advanceAfterMs: 60_000, ...over });
+const earlySkip = (): LeaveSignal => leave({ playedMs: 1000 });
+const completed = (): LeaveSignal => leave({ playedMs: 60_000, cause: 'auto_advance' });
 
 function assertWellFormed(engine: FeedEngine) {
   const items = engine.items();
@@ -219,21 +245,67 @@ describe('ensureAhead', () => {
 });
 
 describe('履歴連携', () => {
-  it('markSkipped で親和度が下がり、markLiked で上がる。reset で消える', async () => {
+  it('早期スキップで親和度が下がり、いいねで上がる。reset で消える', async () => {
     const { engine, history } = setup({ discovery: 0 });
     await engine.ensureAhead(0);
     const first = engine.items()[0];
     expect(first).toBeDefined();
     if (first === undefined) return;
     const artistId = first.track.artists[0]?.id ?? '';
-    engine.markSkipped(first.id);
-    expect(history.affinity(artistId)).toBeCloseTo(-1);
+    engine.markLeft(first.id, earlySkip());
+    expect(history.affinity(artistId)).toBeLessThan(0);
+    expect(history.actionOf(first.id)).toBe('skipped');
     engine.markLiked(first.id);
-    expect(history.affinity(artistId)).toBeCloseTo(1);
+    expect(history.affinity(artistId)).toBeGreaterThanOrEqual(0);
+    expect(history.actionOf(first.id)).toBe('liked');
+    engine.markLeft(first.id, leave({ playedMs: 0 }));
     expect(history.actionOf(first.id)).toBe('liked');
     await engine.reset();
     expect(history.size()).toBe(0);
     expect(engine.items().length).toBeGreaterThan(0);
+  });
+
+  it('「これは違う」でアーティストを避け、作り直しても出ない', async () => {
+    const { engine, history } = setup({ discovery: 0 });
+    await engine.ensureAhead(0);
+    const first = engine.items()[0];
+    if (first === undefined) throw new Error('no items');
+    const artistId = first.track.artists[0]?.id ?? '';
+    engine.markLess(first.id);
+    expect(history.isAvoided(artistId, NOW)).toBe(true);
+    await engine.restart();
+    expect(engine.items().length).toBeGreaterThan(0);
+    expect(engine.items().some((i) => i.track.artists.some((a) => a.id === artistId))).toBe(false);
+  });
+
+  it('発見カードの早期スキップが続くとクールダウンに入り、次の補充は発見を控える', async () => {
+    const { engine } = setup({ discovery: 1, seed: 7 });
+    await engine.ensureAhead(0);
+    const discover = engine.items().filter((i) => i.bucket === 'discover');
+    expect(discover.length).toBeGreaterThanOrEqual(4);
+    for (const it of discover.slice(0, 4)) engine.markLeft(it.id, earlySkip());
+    expect(engine.feedStats().exploration.cooldownLeft).toBe(COOLDOWN_CARDS);
+    const before = engine.items().length;
+    await engine.ensureAhead(before - 1);
+    const fresh = engine.items().slice(before);
+    expect(fresh.length).toBeGreaterThan(0);
+    expect(fresh.slice(0, COOLDOWN_CARDS).every((i) => i.bucket !== 'discover')).toBe(true);
+    expect(engine.feedStats().exploration.cooldownLeft).toBeLessThan(COOLDOWN_CARDS);
+    expect(engine.feedStats().effectiveDiscovery).toBeLessThan(1);
+  });
+
+  it('feedStats は戦略ごとの統計と直近の手応えを返す', async () => {
+    const { engine } = setup({ discovery: 0.8 });
+    await engine.ensureAhead(0);
+    const exploratory = engine.items().filter((i) => i.bucket !== 'known');
+    expect(exploratory.length).toBeGreaterThan(0);
+    for (const it of exploratory.slice(0, 5)) engine.markLeft(it.id, completed());
+    const s = engine.feedStats();
+    expect(Object.keys(s.strategies)).toContain('similar_artist');
+    expect(s.recent.count).toBeGreaterThan(0);
+    expect(s.recent.hitRate).toBeGreaterThan(0);
+    expect(s.external).toBeNull();
+    expect(Object.values(s.served).reduce((a, b) => a + (b ?? 0), 0)).toBe(engine.items().filter((i) => i.strategy !== undefined).length);
   });
 
   it('subscribe は追加のたびに通知される', async () => {
@@ -243,5 +315,148 @@ describe('履歴連携', () => {
     await engine.ensureAhead(0);
     expect(notified).toBeGreaterThan(0);
     unsub();
+  });
+});
+
+describe('発見(未知性・保存済み判定)', () => {
+  it('adjacent / discover のカードは既知アーティストの曲ではない(アルバム深掘りを除く)', async () => {
+    const { engine } = setup({ discovery: 1, seed: 5 });
+    await engine.ensureAhead(0);
+    await engine.ensureAhead(engine.items().length - 1);
+    const exploratory = engine.items().filter((i) => i.bucket !== 'known' && i.reason !== 'deepcut');
+    expect(exploratory.length).toBeGreaterThan(0);
+    expect(exploratory.every((i) => !KNOWN_ARTIST_IDS.has(i.track.artists[0]?.id ?? ''))).toBe(true);
+  });
+
+  it('保存済み判定は補充ごとに 1 コール(予算内)。発見の曲で保存済みなら落とし、他は saved を付ける', async () => {
+    let containsCalls = 0;
+    const { engine, calls } = setup({
+      discovery: 0.6,
+      api: {
+        libraryContains: async (uris) => {
+          containsCalls++;
+          return uris.map(() => true);
+        },
+      },
+    });
+    await engine.ensureAhead(0);
+    expect(containsCalls).toBeGreaterThan(0);
+    expect(calls.length + containsCalls - SEED_SOURCE_COUNT).toBeLessThanOrEqual(FEED_CONSTANTS.budgetPerRefill);
+    const items = engine.items();
+    expect(items.every((i) => i.bucket === 'known')).toBe(true);
+    expect(items.slice(FEED_CONSTANTS.initialDraw).every((i) => i.saved === true)).toBe(true);
+    const flagged = setup({ discovery: 0.6 });
+    await flagged.engine.ensureAhead(0);
+    expect(flagged.calls.filter((c) => c === 'libraryContains').length).toBeGreaterThan(0);
+    expect(flagged.calls.length - SEED_SOURCE_COUNT).toBeLessThanOrEqual(FEED_CONSTANTS.budgetPerRefill);
+    expect(flagged.engine.items().slice(FEED_CONSTANTS.initialDraw).every((i) => i.saved === false)).toBe(true);
+    expect(flagged.engine.items().some((i) => i.bucket !== 'known')).toBe(true);
+  });
+});
+
+describe('外部データ(類似アーティスト)', () => {
+  it('強化後に「〇〇 が好きなら」のカードが出て、種と hop が付く', async () => {
+    const { engine, enrichment, externalCalls } = setup({ discovery: 0.8, external: true, seed: 3, constants: { topUpCards: 0 } });
+    await engine.ensureAhead(0);
+    await engine.seedsSettled();
+    if (enrichment === null) throw new Error('no enrichment');
+    await enrichment.idle();
+    expect(externalCalls.some((c) => c.startsWith('lb:similar'))).toBe(true);
+    await engine.ensureAhead(engine.items().length - 1);
+    await engine.ensureAhead(engine.items().length - 1);
+    await engine.ensureAhead(engine.items().length - 1);
+    const similar = engine.items().filter((i) => i.reason === 'similar');
+    expect(similar.length).toBeGreaterThan(0);
+    const first = similar[0];
+    if (first === undefined) throw new Error('unreachable');
+    expect(first.reasonDetail).toMatch(/^Artist /);
+    expect(reasonLabel(first)).toMatch(/が好きなら$/);
+    expect(similar.every((i) => i.seed !== undefined && i.hop === 1 && i.strategy === 'similar_artist' && i.bucket === 'discover')).toBe(true);
+    expect(similar.every((i) => !KNOWN_ARTIST_IDS.has(i.track.artists[0]?.id ?? ''))).toBe(true);
+    expect(engine.feedStats().external?.similarSeeds).toBeGreaterThan(0);
+    expect(engine.feedStats().topTags.map((t) => t.tag)).toContain('j-pop');
+  });
+
+  it('類似が届いたら次の補充を待たずに数枚だけ先出しする(1 コール + 判定 1 コール)', async () => {
+    const { engine, enrichment, calls } = setup({ discovery: 0.8, external: true, seed: 3 });
+    await engine.ensureAhead(0);
+    await engine.seedsSettled();
+    const before = calls.length;
+    const count = engine.items().length;
+    if (enrichment === null) throw new Error('no enrichment');
+    await enrichment.idle();
+    await new Promise((r) => setTimeout(r, 0));
+    await new Promise((r) => setTimeout(r, 0));
+    const fresh = engine.items().slice(count);
+    expect(fresh.length).toBeGreaterThan(0);
+    expect(fresh.length).toBeLessThanOrEqual(FEED_CONSTANTS.topUpCards);
+    expect(fresh.every((i) => i.reason === 'similar')).toBe(true);
+    expect(calls.length - before).toBeLessThanOrEqual(2);
+  });
+
+  it('設定で外部を切ると外部は 0 コールで、類似カードも出ない', async () => {
+    const { engine, externalCalls } = setup({ discovery: 1, external: true, externalSources: false });
+    await engine.ensureAhead(0);
+    await engine.seedsSettled();
+    await engine.ensureAhead(engine.items().length - 1);
+    expect(externalCalls).toEqual([]);
+    expect(engine.items().some((i) => i.reason === 'similar')).toBe(false);
+    expect(engine.feedStats().external).toBeNull();
+  });
+
+  it('いいね → 類似録音 → 「『曲』に似た曲」。hop 1 の好評 → 橋渡し(bridge)の種になる', async () => {
+    const { engine, enrichment } = setup({ discovery: 1, external: true, seed: 9, constants: { topUpCards: 0 } });
+    await engine.ensureAhead(0);
+    await engine.seedsSettled();
+    if (enrichment === null) throw new Error('no enrichment');
+    await enrichment.idle();
+    const liked = engine.items()[0];
+    if (liked === undefined) throw new Error('no items');
+    engine.markLiked(liked.id);
+    await enrichment.idle();
+    expect(enrichment.tracksWithSimilar()).toEqual([liked.id]);
+    let similarTrack = engine.items().find((i) => i.reason === 'similar_track');
+    for (let round = 0; round < 6 && similarTrack === undefined; round++) {
+      await engine.ensureAhead(engine.items().length - 1);
+      similarTrack = engine.items().find((i) => i.reason === 'similar_track');
+    }
+    expect(similarTrack?.reasonDetail).toBe(liked.track.name);
+    expect(reasonLabel(similarTrack ?? liked)).toContain('に似た曲');
+
+    const similar = engine.items().find((i) => i.reason === 'similar');
+    if (similar === undefined) throw new Error('no similar');
+    for (let i = 0; i < 3; i++) engine.markLeft(similar.id, completed());
+    await enrichment.idle();
+    expect(enrichment.similarOf(similar.track.artists[0]?.id ?? '').length).toBeGreaterThan(0);
+    let bridge = engine.items().find((i) => i.reason === 'bridge');
+    for (let round = 0; round < 8 && bridge === undefined; round++) {
+      await engine.ensureAhead(engine.items().length - 1);
+      bridge = engine.items().find((i) => i.reason === 'bridge');
+    }
+    expect(bridge?.hop).toBe(2);
+    expect(bridge?.reasonDetail).toContain(' → ');
+  });
+
+  it('シミュレーション: 類似アーティストの曲を聴き通し、他の発見を飛ばす人には、類似の戦略が学習される', async () => {
+    const { engine, enrichment } = setup({ discovery: 0.7, external: true, seed: 11, constants: { topUpCards: 0 } });
+    await engine.ensureAhead(0);
+    await engine.seedsSettled();
+    if (enrichment === null) throw new Error('no enrichment');
+    await enrichment.idle();
+    let seen = 0;
+    for (let round = 0; round < 8; round++) {
+      await engine.ensureAhead(engine.items().length - 1);
+      const fresh = engine.items().slice(seen);
+      seen = engine.items().length;
+      for (const it of fresh) {
+        if (it.reason === 'similar' || it.reason === 'bridge' || it.reason === 'similar_track') engine.markLeft(it.id, completed());
+        else if (it.bucket === 'discover') engine.markLeft(it.id, earlySkip());
+        else engine.markLeft(it.id, leave());
+      }
+    }
+    const s = engine.feedStats();
+    expect(s.strategies.similar_artist.mean).toBeGreaterThan(s.strategies.tag_hipster.mean);
+    expect(s.strategies.similar_artist.mean).toBeGreaterThan(s.strategies.genre_search.mean);
+    expect((s.served.similar_artist ?? 0) > 0).toBe(true);
   });
 });

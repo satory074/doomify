@@ -6,22 +6,29 @@ import { pickImage } from '../core/spotify/types';
 import { CardActions } from './CardActions';
 import { ProgressBar } from './ProgressBar';
 
+export type FeedbackMark = 'more' | 'less';
+
 interface Props {
   item: FeedItem;
   active: boolean;
   snapshot: ControllerSnapshot | null;
   liked: boolean;
   likeBusy: boolean;
+  /** 「もっと」「違う」を押した状態 */
+  mark: FeedbackMark | null;
   isMobile: boolean;
   eager: boolean;
   onTogglePause: () => void;
   onLike: () => void;
   onAddToPlaylist: () => void;
+  onOpen: () => void;
+  onMore: () => void;
+  onLess: () => void;
 }
 
 const DOUBLE_TAP_MS = 280;
 
-export function TrackCard({ item, active, snapshot, liked, likeBusy, isMobile, eager, onTogglePause, onLike, onAddToPlaylist }: Props) {
+export function TrackCard({ item, active, snapshot, liked, likeBusy, mark, isMobile, eager, onTogglePause, onLike, onAddToPlaylist, onOpen, onMore, onLess }: Props) {
   const { track } = item;
   const image = pickImage(track.album.images, 640);
   const year = yearOf(track.album);
@@ -84,7 +91,17 @@ export function TrackCard({ item, active, snapshot, liked, likeBusy, isMobile, e
         </button>
       </div>
       <div className="card-body">
-        <p className="card-reason">{reasonLabel(item)}</p>
+        <div className="reason-row">
+          <p className="card-reason">{reasonLabel(item)}</p>
+          <span className="feedback-chips" role="group" aria-label="この曲の手応え">
+            <button type="button" className="chip chip-mini" aria-pressed={mark === 'more'} onClick={onMore} disabled={mark === 'more'}>
+              こういうのをもっと
+            </button>
+            <button type="button" className="chip chip-mini" aria-pressed={mark === 'less'} onClick={onLess} disabled={mark === 'less'}>
+              これは違う
+            </button>
+          </span>
+        </div>
         <h2 className="card-title">{track.name}</h2>
         <p className="card-artist">{formatArtists(track)}</p>
         <p className="card-album">
@@ -101,7 +118,7 @@ export function TrackCard({ item, active, snapshot, liked, likeBusy, isMobile, e
         ) : (
           <div className="progress progress-placeholder" aria-hidden="true" />
         )}
-        <CardActions track={track} liked={liked} busy={likeBusy} isMobile={isMobile} onLike={onLike} onAddToPlaylist={onAddToPlaylist} />
+        <CardActions track={track} liked={liked} busy={likeBusy} isMobile={isMobile} onLike={onLike} onAddToPlaylist={onAddToPlaylist} onOpen={onOpen} />
       </div>
     </div>
   );

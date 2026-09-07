@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { AuthState } from '../core/auth/authManager';
+import { SPOTIFY_TRACK_URL } from '../core/config';
 import { readEnvironment } from '../core/env';
 import type { FeedItem } from '../core/feed/types';
+import { formatArtists } from '../core/format';
 import type { LeaveInfo } from '../core/playback/controller';
 import { trackIdFromUri } from '../core/spotify/types';
 import { createValueStore } from '../core/valueStore';
@@ -83,19 +85,29 @@ export function FeedScreen({ services, settings, updateSettings, authStatus, onL
     [engine, scrollToIndex],
   );
 
+  // カードに入った時刻(意図が決まった瞬間)。離脱時の滞在時間 = いま − これ
+  const enteredRef = useRef<{ index: number; at: number } | null>(null);
+  const leaveSignalOf = useCallback((intent: { index: number; durationMs: number }, playedMs: number, cause: LeaveInfo['cause'], startMs: number, positionMs: number | null) => {
+    const advance = settingsRef.current.advance;
+    const entered = enteredRef.current;
+    return {
+      playedMs,
+      durationMs: intent.durationMs,
+      cause,
+      advanceAfterMs: advance === 'full' ? null : advance * 1000,
+      dwellMs: entered !== null && entered.index === intent.index ? Math.max(0, Date.now() - entered.at) : undefined,
+      startMs,
+      positionMs: positionMs ?? undefined,
+    };
+  }, []);
+
   const callbacks = useMemo<PlaybackCallbacks>(
     () => ({
       onAdvance: (from) => goTo(from + 1),
       onLeave: (info: LeaveInfo) => {
         const id = trackIdFromUri(info.intent.uri);
         if (id === null) return;
-        const advance = settingsRef.current.advance;
-        engine.markLeft(id, {
-          playedMs: info.playedMs,
-          durationMs: info.intent.durationMs,
-          cause: info.cause,
-          advanceAfterMs: advance === 'full' ? null : advance * 1000,
-        });
+        engine.markLeft(id, leaveSignalOf(info.intent, info.playedMs, info.cause, info.startMs, info.positionMs));
       },
       onError: (code, message) => {
         switch (code) {
@@ -127,7 +139,7 @@ export function FeedScreen({ services, settings, updateSettings, authStatus, onL
         }
       },
     }),
-    [goTo, engine, toast, onLogout],
+    [goTo, engine, toast, onLogout, leaveSignalOf],
   );
 
   const playback = usePlayback(services, settings, playbackSettingsStore, callbacks);
@@ -147,6 +159,8 @@ export function FeedScreen({ services, settings, updateSettings, authStatus, onL
       if (item !== undefined && startedRef.current) {
         controller.setActiveTrack({ uri: item.track.uri, durationMs: item.track.duration_ms }, index);
       }
+      // 前のカードの離脱(setActiveTrack 内で同期に通知される)を記録してから、新しいカードの入場時刻を取る
+      if (enteredRef.current?.index !== index) enteredRef.current = { index, at: Date.now() };
       preloadCovers(itemsRef.current, index);
       // 補充の GET は再生要求を積んだ後に(同じキューで再生要求の前に並ばないように)
       void engine.ensureAhead(index);
@@ -170,9 +184,36 @@ export function FeedScreen({ services, settings, updateSettings, authStatus, onL
     if (item !== undefined && playback.started) {
       controller.setActiveTrack({ uri: item.track.uri, durationMs: item.track.duration_ms }, active);
     }
+    if (enteredRef.current?.index !== active) enteredRef.current = { index: active, at: Date.now() };
     preloadCovers(items, active);
     void engine.ensureAhead(active);
   }, [active, items, engine, controller, playback.started]);
+
+  // 画面が隠れる / 閉じるとき: いまのカードの離脱を記録して学習を書き込む(最後のカードを落とさない)。
+  // 復帰後に本当に離れたときの通知は、エンジンが同じ訪問として二重に数えない
+  useEffect(() => {
+    const flush = () => {
+      const s = controller.snapshot();
+      const intent = s.intent;
+      if (intent !== null) {
+        const id = trackIdFromUri(intent.uri);
+        if (id !== null) {
+          const playedMs = s.startedAt === null ? 0 : Math.max(0, Date.now() - s.startedAt);
+          engine.markLeft(id, leaveSignalOf(intent, playedMs, 'user', s.startMs, s.playingUri === intent.uri ? s.positionMs : null));
+        }
+      }
+      void engine.flush();
+    };
+    const onVisibility = () => {
+      if (document.visibilityState === 'hidden') flush();
+    };
+    document.addEventListener('visibilitychange', onVisibility);
+    window.addEventListener('pagehide', flush);
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibility);
+      window.removeEventListener('pagehide', flush);
+    };
+  }, [controller, engine, leaveSignalOf]);
 
   // 開発時のみ: ブラウザのコンソールから移動を試せるようにする(自動テスト用)と、スワイプ → 発音の遅延の内訳
   useEffect(() => {
@@ -200,7 +241,24 @@ export function FeedScreen({ services, settings, updateSettings, authStatus, onL
       snapshot: () => controller.snapshot(),
       timing,
       feedStats: () => engine.feedStats(),
-      items: () => engine.items().map((i) => ({ id: i.id, name: i.track.name, artist: i.track.artists[0]?.name ?? '', reason: i.reason, detail: i.reasonDetail ?? null, bucket: i.bucket, strategy: i.strategy ?? null, hop: i.hop ?? null, saved: i.saved ?? null })),
+      items: () =>
+        engine.items().map((i) => ({
+          id: i.id,
+          name: i.track.name,
+          artist: i.track.artists[0]?.name ?? '',
+          reason: i.reason,
+          detail: i.reasonDetail ?? null,
+          bucket: i.bucket,
+          strategy: i.strategy ?? null,
+          hop: i.hop ?? null,
+          saved: i.saved ?? null,
+          slot: i.slot ?? null,
+          ev: i.ev ?? null,
+          score: i.score ?? null,
+          pComplete: i.predictions?.complete ?? null,
+          pSkip: i.predictions?.earlySkip ?? null,
+        })),
+      session: () => engine.feedStats().session,
     };
     let loggedFor: number | null = null;
     const unsubscribe = controller.subscribe((s) => {
@@ -283,6 +341,35 @@ export function FeedScreen({ services, settings, updateSettings, authStatus, onL
     [engine, toast, goTo],
   );
   const open = useCallback((item: FeedItem) => engine.markOpened(item.id), [engine]);
+  // 共有(Instagram の sends / X の share に相当する最重要シグナルの 1 つ): 共有シートがあればそれ、無ければリンクをコピー
+  const share = useCallback(
+    async (item: FeedItem) => {
+      const url = SPOTIFY_TRACK_URL(item.track.id);
+      const title = `${item.track.name} – ${formatArtists(item.track)}`;
+      const copy = async () => {
+        await navigator.clipboard.writeText(url);
+        toast('リンクをコピーしました');
+      };
+      try {
+        if (typeof navigator.share === 'function') {
+          try {
+            await navigator.share({ title, text: title, url });
+            toast('共有しました');
+          } catch (e) {
+            // 共有シートを閉じただけなら何もしない。共有シートが使えない環境ならリンクのコピーへ
+            if (e instanceof Error && e.name === 'AbortError') return;
+            await copy();
+          }
+        } else {
+          await copy();
+        }
+        engine.markShared(item.id);
+      } catch {
+        toast('共有できませんでした');
+      }
+    },
+    [engine, toast],
+  );
 
   const activeItem = items[active];
   const togglePause = useCallback(() => void controller.togglePause(), [controller]);
@@ -357,6 +444,7 @@ export function FeedScreen({ services, settings, updateSettings, authStatus, onL
         onLike={(item) => void like(item)}
         onAddToPlaylist={setPlaylistTarget}
         onOpen={open}
+        onShare={(item) => void share(item)}
         onMore={more}
         onLess={less}
         onRestart={() => {

@@ -60,6 +60,7 @@ const EMPTY_SNAPSHOT: ControllerSnapshot = {
   intentAt: null,
   issuedAt: null,
   resolvedAt: null,
+  startMs: 0,
   ready: false,
 };
 

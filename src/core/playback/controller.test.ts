@@ -196,16 +196,23 @@ describe('setActiveTrack', () => {
   it('離れるときに onLeave で再生時間を通知する', async () => {
     const t = fakeTarget();
     ctl = started(createPlaybackController({ target: t.target, settings: () => settings }));
-    const leaves: { uri: string; playedMs: number }[] = [];
-    ctl.onLeave((info) => leaves.push({ uri: info.intent.uri, playedMs: info.playedMs }));
+    const leaves: { uri: string; playedMs: number; startMs: number; positionMs: number | null }[] = [];
+    ctl.onLeave((info) => leaves.push({ uri: info.intent.uri, playedMs: info.playedMs, startMs: info.startMs, positionMs: info.positionMs }));
     ctl.setActiveTrack(TRACK_A, 0);
     await vi.advanceTimersByTimeAsync(250);
+    expect(ctl.snapshot().startMs).toBe(60_000);
     t.emit({ type: 'state', state: t.state({ uri: TRACK_A.uri, positionMs: 60_000 }) });
     await vi.advanceTimersByTimeAsync(5_000);
     ctl.setActiveTrack(TRACK_B, 1);
     expect(leaves).toHaveLength(1);
     expect(leaves[0]?.uri).toBe(TRACK_A.uri);
     expect(leaves[0]?.playedMs).toBe(5_000);
+    // 開始位置(hook 30%)と、離れたときの補間位置も渡す(一時停止を含まない完了率に使う)
+    expect(leaves[0]?.startMs).toBe(60_000);
+    expect(leaves[0]?.positionMs).toBe(65_000);
+    // 別の曲の状態しか無ければ位置は不明
+    ctl.setActiveTrack(TRACK_A, 2);
+    expect(leaves[1]?.positionMs).toBeNull();
   });
 });
 

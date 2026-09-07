@@ -63,15 +63,21 @@ export interface ControllerSnapshot {
   issuedAt: number | null;
   /** その要求が解決(受理)した時刻 */
   resolvedAt: number | null;
+  /** この intent の再生開始位置 ms(サビ開始なら > 0) */
+  startMs: number;
   ready: boolean;
 }
 
 export interface LeaveInfo {
   intent: TrackIntent;
-  /** この曲が実際に鳴っていた時間 ms */
+  /** この曲が実際に鳴っていた時間 ms(壁時計。一時停止を含む) */
   playedMs: number;
   /** auto_advance: 自動送り(一定時間 or 曲終了)で離れた。user: スワイプなどの操作 */
   cause: 'user' | 'auto_advance';
+  /** 再生開始位置 ms */
+  startMs: number;
+  /** 離れたときの再生位置 ms(この曲の状態が報告されていれば) */
+  positionMs: number | null;
 }
 
 export interface PlaybackController {
@@ -202,6 +208,7 @@ export function createPlaybackController(deps: ControllerDeps): PlaybackControll
     intentAt,
     issuedAt,
     resolvedAt,
+    startMs,
     ready,
   });
 
@@ -375,7 +382,8 @@ export function createPlaybackController(deps: ControllerDeps): PlaybackControll
         const playedMs = startedAt === null ? 0 : Math.max(0, now() - startedAt);
         const leaving = intent;
         const cause = advanced ? 'auto_advance' : 'user';
-        for (const cb of leaveCbs) cb({ intent: leaving, playedMs, cause });
+        const positionMs = lastState !== null && lastState.uri === leaving.uri ? interpolatedPosition() : null;
+        for (const cb of leaveCbs) cb({ intent: leaving, playedMs, cause, startMs, positionMs });
       }
       clearTimers();
       abort?.abort();

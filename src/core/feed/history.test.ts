@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MemoryStore } from '../spotify/cache';
-import { createHistory, FLUSH_DELAY_MS, HISTORY_KEY, migrateHistory, SEEN_TTL_MS, type HistoryData } from './history';
+import { ACTION_ARTISTS_MAX, createHistory, FLUSH_DELAY_MS, HISTORY_KEY, migrateHistory, SEEN_TTL_MS, type HistoryData } from './history';
 
 beforeEach(() => vi.useFakeTimers());
 afterEach(() => vi.useRealTimers());
@@ -97,14 +97,77 @@ describe('feedback(v2)', () => {
     expect(h2.exploration()).toEqual({ ema: 0.4, earlySkipStreak: 1, cooldownLeft: 2 });
   });
 
-  it('v1 の保存データを v2 に移行する', () => {
+  it('v1 / v2 の保存データを v3 に移行する(無いフィールドは既定値)', () => {
     const migrated = migrateHistory({ version: 1, seen: { t1: { at: 1, action: 'liked' } }, artistAffinity: { a1: 2 } });
-    expect(migrated?.version).toBe(2);
+    expect(migrated?.version).toBe(3);
     expect(migrated?.seen.t1?.action).toBe('liked');
     expect(migrated?.artistAffinity.a1).toBe(2);
     expect(migrated?.tagAffinity).toEqual({});
     expect(migrated?.exploration.cooldownLeft).toBe(0);
-    expect(migrateHistory({ version: 3, seen: {} })).toBeNull();
+    expect(migrated?.actions.global).toEqual({ n: 0, k: {}, at: 0 });
+    expect(migrated?.trials).toEqual({});
+    expect(migrated?.session.cards).toBe(0);
+    expect(migrated?.session.dayTags).toEqual({});
+    const v2 = migrateHistory({ version: 2, seen: {}, tagAffinity: { 'j-pop': 1 }, recent: [], actions: { global: 'broken', artist: { a1: { n: 2, k: { like: 1 }, at: 5 }, a2: 'junk' } } });
+    expect(v2?.version).toBe(3);
+    expect(v2?.tagAffinity['j-pop']).toBe(1);
+    expect(v2?.actions.global).toEqual({ n: 0, k: {}, at: 0 });
+    expect(v2?.actions.artist.a1?.k.like).toBe(1);
+    expect(v2?.actions.artist.a2).toBeUndefined();
+    expect(migrateHistory({ version: 4, seen: {} })).toBeNull();
     expect(migrateHistory('junk')).toBeNull();
+  });
+});
+
+describe('v3(行動計数・試験・セッション)', () => {
+  it('exposure / observe が global・戦略・タグ・主アーティストの計数を増やし、取り消しは 0 未満にならない', () => {
+    const h = createHistory(new MemoryStore());
+    h.exposure({ artistIds: ['a1', 'a2'], tags: ['j-pop', 'anime'], strategy: 'similar_artist', now: 10 });
+    h.observe({ action: 'like', artistIds: ['a1', 'a2'], tags: ['j-pop', 'anime'], strategy: 'similar_artist', now: 11 });
+    expect(h.actionCounts('global').n).toBeCloseTo(1);
+    expect(h.actionCounts('global').k.like).toBe(1);
+    expect(h.actionCounts('strategy', 'similar_artist')?.n).toBeCloseTo(1);
+    expect(h.actionCounts('tag', 'anime')?.k.like).toBe(1);
+    expect(h.actionCounts('artist', 'a1')?.k.like).toBe(1);
+    expect(h.actionCounts('artist', 'a2')).toBeUndefined();
+    h.observe({ action: 'like', delta: -1, artistIds: ['a1'], now: 12 });
+    h.observe({ action: 'like', delta: -1, artistIds: ['a1'], now: 13 });
+    expect(h.actionCounts('artist', 'a1')?.k.like).toBeUndefined();
+    expect(h.actionCounts('global').k.like).toBeUndefined();
+    expect(h.actionCounts('artist', 'a1')?.at).toBe(13);
+  });
+
+  it('試験状態とセッションは保存され、日付が変わると同日タグ回数が空になる', async () => {
+    const store = new MemoryStore();
+    const h = createHistory(store);
+    const day1 = new Date(2026, 8, 7, 12).getTime();
+    const day2 = new Date(2026, 8, 8, 1).getTime();
+    h.setTrial('a1', { stage: 1, shown: 1, at: day1 });
+    h.exposure({ artistIds: ['a1'], tags: ['j-pop', 'anime', 'pop', 'extra'], now: day1 });
+    h.exposure({ artistIds: ['a2'], tags: ['j-pop'], now: day1 + 1 });
+    expect(h.session().dayTags).toEqual({ 'j-pop': 2, anime: 1, pop: 1 });
+    h.setSession({ startedAt: day1, lastAt: day1 + 1, cards: 2, totalDwellMs: 5000, dwellByArtist: { a1: 5000 }, dwellByTag: { 'j-pop': 5000 } });
+    await h.flush();
+    const h2 = createHistory(store);
+    await h2.load();
+    expect(h2.trialOf('a1')).toEqual({ stage: 1, shown: 1, at: day1 });
+    expect(h2.trials()).toEqual({ a1: { stage: 1, shown: 1, at: day1 } });
+    expect(h2.session().cards).toBe(2);
+    expect(h2.session().dwellByTag['j-pop']).toBe(5000);
+    expect(h2.session().dayTags['j-pop']).toBe(2);
+    h2.touchDay(day1 + 1000);
+    expect(h2.session().dayTags['j-pop']).toBe(2);
+    h2.touchDay(day2);
+    expect(h2.session().dayTags).toEqual({});
+    expect(h2.session().cards).toBe(2);
+  });
+
+  it('アーティストの計数は上限を超えると古い順に落ちる', () => {
+    const h = createHistory(new MemoryStore());
+    const total = Math.floor(ACTION_ARTISTS_MAX * 1.2) + 1;
+    for (let i = 0; i < total; i++) h.exposure({ artistIds: [`a${i}`], now: i + 1 });
+    expect(h.actionCounts('artist', 'a0')).toBeUndefined();
+    expect(h.actionCounts('artist', `a${total - 1}`)?.n).toBe(1);
+    expect(h.actionCounts('global').n).toBeCloseTo(total, 0);
   });
 });

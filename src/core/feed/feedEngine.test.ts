@@ -206,6 +206,8 @@ describe('ensureAhead', () => {
 
     const discover = setup({ discovery: 1, seed: 5 });
     await discover.engine.ensureAhead(0);
+    // 未知アーティストは反応が来るまで 1 枚ずつ(段階配信)なので、最初のバッチを聴き通してから次を見る
+    for (const it of discover.engine.items()) discover.engine.markLeft(it.id, completed());
     await discover.engine.ensureAhead(discover.engine.items().length - 1);
     const items = discover.engine.items();
     const nonKnown = items.filter((i) => i.bucket !== 'known').length;
@@ -458,5 +460,150 @@ describe('外部データ(類似アーティスト)', () => {
     expect(s.strategies.similar_artist.mean).toBeGreaterThan(s.strategies.tag_hipster.mean);
     expect(s.strategies.similar_artist.mean).toBeGreaterThan(s.strategies.genre_search.mean);
     expect((s.served.similar_artist ?? 0) > 0).toBe(true);
+  });
+});
+
+const primaryOf = (it: { track: { artists: { id: string }[] } }) => it.track.artists[0]?.id ?? '';
+
+describe('For You(価値モデル・セッション・段階配信)', () => {
+  it('items に枠・期待値・予測が付き、feedStats にセッション・枠・フィルタ・試験・反応率が出る', async () => {
+    const { engine } = setup({ discovery: 0.7, seed: 3 });
+    await engine.ensureAhead(0);
+    const items = engine.items();
+    expect(items[0]?.slot).toBe('anchor');
+    expect(items.every((i) => i.slot !== undefined && typeof i.score === 'number' && typeof i.ev === 'number' && i.predictions !== undefined)).toBe(true);
+    for (const it of items.slice(0, 5)) engine.markLeft(it.id, completed());
+    const s = engine.feedStats();
+    expect(s.session.cards).toBe(5);
+    expect(s.session.confidence).toBeGreaterThan(0);
+    expect(Object.values(s.slots).reduce((a, b) => a + (b ?? 0), 0)).toBe(items.length);
+    expect(s.valueModel.exposures).toBeCloseTo(5);
+    expect(s.valueModel.rates.complete).toBeCloseTo(1);
+    expect(s.trials.active + s.trials.graduated + s.trials.blocked).toBeGreaterThanOrEqual(0);
+    expect(Object.keys(s.filters).length).toBeGreaterThan(0);
+  });
+
+  it('同じ訪問の離脱は 1 回だけ学習し、戻ってきた後はもう 1 回学習する', async () => {
+    const { engine, history } = setup({ discovery: 0 });
+    await engine.ensureAhead(0);
+    const first = engine.items()[0];
+    if (first === undefined) throw new Error('no items');
+    engine.markLeft(first.id, completed());
+    engine.markLeft(first.id, completed());
+    expect(history.actionCounts('global').n).toBeCloseTo(1);
+    expect(history.recent()).toHaveLength(1);
+    engine.markReturned(first.id);
+    engine.markLeft(first.id, completed());
+    expect(history.actionCounts('global').n).toBeCloseTo(2);
+    expect(history.actionCounts('global').k.return).toBeCloseTo(1);
+  });
+
+  it('共有は主アーティストとタグの計数に入り、そのアーティストの期待値が上がる', async () => {
+    const { engine, history } = setup({ discovery: 0 });
+    await engine.ensureAhead(0);
+    const first = engine.items()[0];
+    if (first === undefined) throw new Error('no items');
+    engine.markShared(first.id);
+    expect(history.actionCounts('artist', primaryOf(first))?.k.share).toBeCloseTo(1);
+    expect(history.recent()[0]?.reward).toBe(1);
+    expect(history.affinity(primaryOf(first))).toBeGreaterThan(0);
+  });
+
+  it('「これは違う」でプールと未表示のキュー(active+3 より先)から同アーティストが消え、同数がゼロコールで引き直される', async () => {
+    const { engine, calls } = setup({ discovery: 0 });
+    await engine.ensureAhead(0);
+    const active = 2;
+    await engine.ensureAhead(active);
+    const before = engine.items();
+    const target = before[active];
+    if (target === undefined) throw new Error('no items');
+    const artistId = primaryOf(target);
+    expect(before.slice(active + 4).some((i) => primaryOf(i) === artistId)).toBe(true);
+    const callsBefore = calls.length;
+    engine.markLess(target.id);
+    const after = engine.items();
+    expect(calls.length).toBe(callsBefore);
+    expect(after.slice(0, active + 4).map((i) => i.id)).toEqual(before.slice(0, active + 4).map((i) => i.id));
+    expect(after.length).toBe(before.length);
+    expect(after.slice(active + 4).some((i) => i.track.artists.some((a) => a.id === artistId))).toBe(false);
+    expect(engine.feedStats().pools.known).toBeGreaterThan(0);
+    assertWellFormed(engine);
+
+    const fixed = setup({ discovery: 0, constants: { pruneAheadKeep: Number.POSITIVE_INFINITY } });
+    await fixed.engine.ensureAhead(0);
+    const ids = fixed.engine.items().map((i) => i.id);
+    const t = fixed.engine.items()[0];
+    if (t === undefined) throw new Error('no items');
+    fixed.engine.markLess(t.id);
+    expect(fixed.engine.items().map((i) => i.id)).toEqual(ids);
+  });
+
+  it('未知アーティストは結果待ち 1 枚から始まり、聴き通すと次の補充で 2 枚目以降が出る', async () => {
+    const { engine, enrichment, history } = setup({ discovery: 1, external: true, seed: 3, constants: { topUpCards: 0 } });
+    await engine.ensureAhead(0);
+    await engine.seedsSettled();
+    if (enrichment === null) throw new Error('no enrichment');
+    await enrichment.idle();
+    let similar = engine.items().filter((i) => i.reason === 'similar');
+    for (let round = 0; round < 4 && similar.length === 0; round++) {
+      await engine.ensureAhead(engine.items().length - 1);
+      similar = engine.items().filter((i) => i.reason === 'similar');
+    }
+    const first = similar[0];
+    if (first === undefined) throw new Error('no similar');
+    const artistId = primaryOf(first);
+    const countOf = () => engine.items().filter((i) => primaryOf(i) === artistId).length;
+    expect(countOf()).toBe(1);
+    expect(history.trialOf(artistId)).toEqual({ stage: 0, shown: 1, at: NOW });
+    // 反応が無いうちは同じアーティストを増やさない
+    await engine.ensureAhead(engine.items().length - 1);
+    expect(countOf()).toBe(1);
+    engine.markLeft(first.id, completed());
+    expect(history.trialOf(artistId)?.stage).toBe(1);
+    await engine.ensureAhead(engine.items().length - 1);
+    await engine.ensureAhead(engine.items().length - 1);
+    expect(countOf()).toBeGreaterThanOrEqual(2);
+    expect(countOf()).toBeLessThanOrEqual(3);
+    assertWellFormed(engine);
+  });
+
+  it('シミュレーション(ラビットホール): city pop に長く居て j-pop 系を早めに離れると、以後の発見が city pop に寄る', async () => {
+    const { engine, enrichment } = setup({ discovery: 1, external: true, seed: 11, constants: { topUpCards: 0 } });
+    await engine.ensureAhead(0);
+    await engine.seedsSettled();
+    if (enrichment === null) throw new Error('no enrichment');
+    await enrichment.idle();
+    const tagsOf = (it: { track: { artists: { id: string }[] } }) => enrichment.tagsOfSpotifyArtist(primaryOf(it)) ?? [];
+    const isCity = (it: { track: { artists: { id: string }[] } }) => tagsOf(it).includes('city pop');
+    // WSJ の実験と同じ: 興味のあるもの(city pop)だけ最後まで聴き、それ以外は素早くスワイプ
+    let seen = 0;
+    let earlyCity = 0;
+    let earlyAll = 0;
+    let lateCity = 0;
+    let lateAll = 0;
+    for (let round = 0; round < 10; round++) {
+      await engine.ensureAhead(engine.items().length - 1);
+      await enrichment.idle();
+      const fresh = engine.items().slice(seen);
+      seen = engine.items().length;
+      const similar = fresh.filter((i) => (i.reason === 'similar' || i.reason === 'bridge') && tagsOf(i).length > 0);
+      const city = similar.filter(isCity).length;
+      if (round < 3) {
+        earlyCity += city;
+        earlyAll += similar.length;
+      } else if (round >= 6) {
+        lateCity += city;
+        lateAll += similar.length;
+      }
+      for (const it of fresh) {
+        if (isCity(it)) engine.markLeft(it.id, leave({ playedMs: 60_000, cause: 'auto_advance', dwellMs: 60_000 }));
+        else engine.markLeft(it.id, leave({ playedMs: 5_000, dwellMs: 5_000 }));
+      }
+    }
+    expect(earlyAll).toBeGreaterThan(0);
+    expect(lateAll).toBeGreaterThanOrEqual(4);
+    expect(lateCity / lateAll).toBeGreaterThan(earlyCity / earlyAll);
+    expect(lateCity / lateAll).toBeGreaterThan(0.6);
+    expect(engine.feedStats().session.topInterests[0]?.key).toBe('city pop');
   });
 });

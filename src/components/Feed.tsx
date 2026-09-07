@@ -22,6 +22,7 @@ interface Props {
   onTogglePause: () => void;
   onLike: (item: FeedItem) => void;
   onAddToPlaylist: (item: FeedItem) => void;
+  onShare: (item: FeedItem) => void;
   onOpen: (item: FeedItem) => void;
   onMore: (item: FeedItem) => void;
   onLess: (item: FeedItem) => void;
@@ -120,6 +121,7 @@ function FeedCard(props: Props & { item: FeedItem; index: number; render: boolea
           onTogglePause={props.onTogglePause}
           onLike={() => props.onLike(item)}
           onAddToPlaylist={() => props.onAddToPlaylist(item)}
+          onShare={() => props.onShare(item)}
           onOpen={() => props.onOpen(item)}
           onMore={() => props.onMore(item)}
           onLess={() => props.onLess(item)}

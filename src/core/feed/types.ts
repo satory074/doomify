@@ -1,5 +1,7 @@
 import type { Track } from '../spotify/types';
+import type { SlotKind } from './pacing';
 import type { Strategy } from './scheduler';
+import type { ActionName } from './valueModel';
 
 /** その曲がフィードに出てきた理由。カードのラベルとバケット重みに使う */
 export type FeedReason =
@@ -59,6 +61,14 @@ export interface FeedItem {
   hop?: number;
   /** ライブラリに保存済みか(判定できたときだけ) */
   saved?: boolean;
+  /** どの枠で出したか(anchor: なじみ / exploit: 期待値 / trial: 未知アーティストの試験 / wildcard: くじ引き) */
+  slot?: SlotKind;
+  /** ランカーのスコア(診断用) */
+  score?: number;
+  /** 価値モデルの期待値 Σ w_a × P(a) */
+  ev?: number;
+  /** 行動ごとの予測確率 */
+  predictions?: Partial<Record<ActionName, number>>;
 }
 
 /** 好みと無関係な「くじ引き」の理由(連続させない) */

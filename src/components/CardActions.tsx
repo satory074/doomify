@@ -9,11 +9,13 @@ interface Props {
   isMobile: boolean;
   onLike: () => void;
   onAddToPlaylist: () => void;
+  /** 共有した(共有シート / リンクのコピー。最重要シグナルの 1 つ) */
+  onShare: () => void;
   /** 「Spotify で開く」を押した(強い正のフィードバック) */
   onOpen: () => void;
 }
 
-export function CardActions({ track, liked, busy, isMobile, onLike, onAddToPlaylist, onOpen }: Props) {
+export function CardActions({ track, liked, busy, isMobile, onLike, onAddToPlaylist, onShare, onOpen }: Props) {
   const openUrl = SPOTIFY_TRACK_URL(track.id);
   return (
     <div className="actions">
@@ -33,6 +35,12 @@ export function CardActions({ track, liked, busy, isMobile, onLike, onAddToPlayl
           <path fill="currentColor" d="M3 6h12v2H3zm0 4h12v2H3zm0 4h8v2H3zm14 0v-3h2v3h3v2h-3v3h-2v-3h-3v-2z" />
         </svg>
         プレイリストへ
+      </button>
+      <button type="button" className="btn" onClick={onShare}>
+        <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true">
+          <path fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" d="M12 3v12M7 8l5-5 5 5M5 14v5a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-5" />
+        </svg>
+        共有
       </button>
       <a
         className="btn btn-spotify"

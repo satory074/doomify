@@ -25,6 +25,8 @@ export interface ExpandContext {
   albumTotals: Map<string, number>;
   /** 検索クエリごとの total */
   searchTotals: Map<string, number>;
+  /** タグ集合への好み(セッション興味 × 価値モデル)。候補を取りに行く段階でも個人化する(Phoenix の検索側に相当)。無ければ 1 */
+  tagBoost?: (tags: readonly string[]) => number;
 }
 
 export interface ExpandResult {
@@ -122,7 +124,8 @@ export async function similarArtist(ctx: ExpandContext, artists: readonly SeedAr
     .similarOf(seed.id)
     .filter((e) => !isKnownArtistName(ctx.taste, e.name))
     .slice(0, SIMILAR_TOP_N);
-  const entry = pickWeighted(ctx.rng, entries, (e) => Math.exp(-e.rank / SIMILAR_RANK_SCALE));
+  const boost = ctx.tagBoost;
+  const entry = pickWeighted(ctx.rng, entries, (e) => Math.exp(-e.rank / SIMILAR_RANK_SCALE) * (boost === undefined ? 1 : boost(enrichment.tagsOfMbid(e.mbid) ?? [])));
   if (entry === undefined) return NO_RESULT;
   enrichment.markUsed(seed.id, entry.mbid);
 

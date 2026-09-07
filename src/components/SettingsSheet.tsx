@@ -1,5 +1,7 @@
 import type { FeedStats } from '../core/feed/feedEngine';
 import { DEFAULT_GENRES } from '../core/feed/genres';
+import type { SlotKind } from '../core/feed/pacing';
+import type { FilterReason } from '../core/feed/ranker';
 import type { Strategy } from '../core/feed/scheduler';
 import type { AdvanceMode, Settings } from '../hooks/useSettings';
 import { Modal } from './Modal';
@@ -37,6 +39,21 @@ const STRATEGY_LABEL: Record<Strategy, string> = {
 };
 
 const DISCOVERY_STRATEGIES: readonly Strategy[] = ['similar_artist', 'similar_track', 'bridge', 'appears_on', 'deep_cut', 'genre_search', 'tag_new', 'tag_hipster'];
+
+const SLOT_LABEL: Record<SlotKind, string> = { anchor: 'なじみ', exploit: '期待値', trial: '試験', wildcard: 'くじ引き' };
+
+const FILTER_LABEL: Record<FilterReason, string> = {
+  seen: '見た曲',
+  duplicate: '重複',
+  avoided: '避けるアーティスト',
+  known_artist: '既知アーティスト',
+  excluded_tag: '除外ジャンル',
+  trial_cap: '試験の上限',
+  artist_spacing: 'アーティスト間隔',
+  wildcard_adjacent: 'くじ引きの連続',
+};
+
+const pct = (v: number) => `${Math.round(v * 100)}%`;
 
 export function SettingsSheet({ open, settings, authNote, stats, onUpdate, onResetHistory, onLogout, onClose }: Props) {
   const toggleGenre = (g: string) => {
@@ -172,10 +189,47 @@ function Diagnostics({ stats }: { stats: FeedStats }) {
     .sort((a, b) => b.mean - a.mean)
     .slice(0, 3);
   const ext = stats.external;
+  const slotEntries = (Object.keys(SLOT_LABEL) as SlotKind[]).map((k) => [k, stats.slots[k] ?? 0] as const).filter(([, n]) => n > 0);
+  const filterEntries = (Object.keys(FILTER_LABEL) as FilterReason[])
+    .map((k) => [k, stats.filters[k] ?? 0] as const)
+    .filter(([, n]) => n > 0)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 3);
+  const rates = stats.valueModel.rates;
+  const interests = stats.session.topInterests.map((t) => `${t.key} ${pct(t.share)}`).join(' / ');
   return (
     <fieldset className="field diag">
       <legend>発見の様子</legend>
       <dl className="diag-list">
+        <div>
+          <dt>このセッション</dt>
+          <dd>
+            {stats.session.cards} 枚・{Math.round(stats.session.minutes)} 分・確信度 {pct(stats.session.confidence)}
+            {interests !== '' ? `。興味: ${interests}` : ''}
+          </dd>
+        </div>
+        <div>
+          <dt>枠の内訳</dt>
+          <dd>{slotEntries.length === 0 ? 'まだありません' : slotEntries.map(([k, n]) => `${SLOT_LABEL[k]} ${n}`).join(' / ')}</dd>
+        </div>
+        <div>
+          <dt>学習した反応率</dt>
+          <dd>
+            {stats.valueModel.exposures < 1
+              ? 'まだデータがありません'
+              : `完走 ${pct(rates.complete)} / 保存 ${pct(rates.like)} / 共有 ${pct(rates.share)} / 早期スキップ ${pct(rates.earlySkip)}(${Math.round(stats.valueModel.exposures)} 枚)`}
+          </dd>
+        </div>
+        <div>
+          <dt>未知アーティストの試験</dt>
+          <dd>
+            試験中 {stats.trials.active} / 定着 {stats.trials.graduated} / 停止中 {stats.trials.blocked}
+          </dd>
+        </div>
+        <div>
+          <dt>落とした候補</dt>
+          <dd>{filterEntries.length === 0 ? 'なし' : filterEntries.map(([k, n]) => `${FILTER_LABEL[k]} ${n}`).join(' / ')}</dd>
+        </div>
         <div>
           <dt>いまの発見度</dt>
           <dd>

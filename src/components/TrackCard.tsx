@@ -21,6 +21,7 @@ interface Props {
   onTogglePause: () => void;
   onLike: () => void;
   onAddToPlaylist: () => void;
+  onShare: () => void;
   onOpen: () => void;
   onMore: () => void;
   onLess: () => void;
@@ -28,7 +29,7 @@ interface Props {
 
 const DOUBLE_TAP_MS = 280;
 
-export function TrackCard({ item, active, snapshot, liked, likeBusy, mark, isMobile, eager, onTogglePause, onLike, onAddToPlaylist, onOpen, onMore, onLess }: Props) {
+export function TrackCard({ item, active, snapshot, liked, likeBusy, mark, isMobile, eager, onTogglePause, onLike, onAddToPlaylist, onShare, onOpen, onMore, onLess }: Props) {
   const { track } = item;
   const image = pickImage(track.album.images, 640);
   const year = yearOf(track.album);
@@ -118,7 +119,7 @@ export function TrackCard({ item, active, snapshot, liked, likeBusy, mark, isMob
         ) : (
           <div className="progress progress-placeholder" aria-hidden="true" />
         )}
-        <CardActions track={track} liked={liked} busy={likeBusy} isMobile={isMobile} onLike={onLike} onAddToPlaylist={onAddToPlaylist} onOpen={onOpen} />
+        <CardActions track={track} liked={liked} busy={likeBusy} isMobile={isMobile} onLike={onLike} onAddToPlaylist={onAddToPlaylist} onShare={onShare} onOpen={onOpen} />
       </div>
     </div>
   );

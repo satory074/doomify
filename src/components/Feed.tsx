@@ -81,7 +81,8 @@ function TailMessage({ title, body, action, onAction }: { title: string; body: s
   );
 }
 
-/** 最初の種を待つ間のカード。アートも曲名も出さない中立の形だけで、実カードと同じレイアウト(切り替え時にずれない) */
+/** 最初の種を待つ間のカード。アートも曲名も出さない中立の形だけ。
+ *  本文は実カードと同じクラスの行を同じ高さで並べるので、カバーの大きさも一致する(差し替え時に跳ねない) */
 function SkeletonCard() {
   return (
     <article className="card card-skeleton" aria-busy="true" aria-label="あなたの曲を集めています">
@@ -90,11 +91,23 @@ function SkeletonCard() {
           <div className="skeleton-art" aria-hidden="true" />
         </div>
         <div className="card-body" aria-hidden="true">
-          <span className="skeleton-line skeleton-reason" />
-          <span className="skeleton-line skeleton-title" />
-          <span className="skeleton-line skeleton-artist" />
-          <span className="skeleton-line skeleton-album" />
-          <p className="skeleton-caption">あなたの曲を集めています</p>
+          <div className="card-head">
+            <div className="reason-row">
+              <p className="card-reason">あなたの曲を集めています</p>
+            </div>
+            <div className="card-title skeleton-row skeleton-title" />
+          </div>
+          <div className="card-artist skeleton-row skeleton-artist" />
+          <div className="card-album skeleton-row skeleton-album" />
+          <div className="progress">
+            <div className="progress-track" />
+          </div>
+          <div className="actions">
+            <span className="skeleton-btn" />
+            <span className="skeleton-btn" />
+            <span className="skeleton-btn" />
+            <span className="skeleton-pill" />
+          </div>
         </div>
       </div>
     </article>

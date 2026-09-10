@@ -36,6 +36,7 @@ body {
 
 html {
   -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
 }
 
 body {
@@ -56,6 +57,14 @@ button,
 input,
 select {
   font: inherit;
+}
+
+/* ダブルタップ拡大の待ちを無くし、カバーの 2 回タップ保存と衝突させない(スワイプ・ピンチは残す) */
+button,
+a,
+input,
+[role='radio'] {
+  touch-action: manipulation;
 }
 
 a {

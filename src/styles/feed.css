@@ -20,6 +20,8 @@
   display: none;
 }
 
+/* カードはサイズコンテナ card。高さは常に .feed と同じ 100%(snap.ts の幾何の前提)で、
+   中身はこのコンテナの幅・高さに合わせて詰める(ファイル末尾の @container card) */
 .card {
   position: relative;
   height: 100%;
@@ -28,6 +30,7 @@
   background: var(--card-bg, var(--ground));
   overflow: hidden;
   contain: paint;
+  container: card / size;
 }
 
 .card::before {
@@ -36,28 +39,49 @@
   position: absolute;
   left: 50%;
   top: 36%;
-  width: 120vw;
-  height: 70vh;
+  width: 120%;
+  height: 70%;
   transform: translate(-50%, -50%);
   background: radial-gradient(closest-side, var(--card-glow, transparent), transparent 70%);
   opacity: 0.9;
   pointer-events: none;
 }
 
+/* カバーは「本文を置いた残り」に収まる最大の正方形(.card-art-button)。
+   そのため本文の各行は高さを変数で明示し、曲名は 2 行ぶんの枠を常に取る(曲ごと・スケルトンでカバーの大きさが揺れない) */
 .card-content {
+  --pad-top: calc(var(--safe-top) + 64px);
+  --pad-bottom: calc(var(--safe-bottom) + 20px);
+  --art-gap: 16px;
+  --row-gap: 4px;
+  --chip-h: 30px;
+  --title-size: clamp(24px, 7.2cqi, 34px);
+  --title-lh: calc(var(--title-size) * 1.18);
+  --artist-size: 17px;
+  --artist-h: 24px;
+  --album-h: 18px;
+  --progress-gap: 12px;
+  --progress-h: 22px;
+  --actions-gap: 14px;
+  --action-h: 48px;
   position: relative;
   max-width: 560px;
   margin: 0 auto;
   height: 100%;
   display: grid;
-  grid-template-rows: minmax(0, 1fr) auto;
-  padding: calc(var(--safe-top) + 64px) calc(20px + var(--safe-right)) calc(var(--safe-bottom) + 20px) calc(20px + var(--safe-left));
-  gap: 16px;
+  grid-template: minmax(0, 1fr) auto / minmax(0, 1fr);
+  gap: var(--art-gap);
+  padding: var(--pad-top) calc(20px + var(--safe-right)) var(--pad-bottom) calc(20px + var(--safe-left));
 }
 
+/* サイズコンテナ art。自然な大きさが 0 になるので、必ずグリッドのセルいっぱいに伸ばす(中央寄せにすると潰れる) */
 .card-art-wrap {
+  container: art / size;
+  align-self: stretch;
+  justify-self: stretch;
   display: grid;
   place-items: center;
+  min-width: 0;
   min-height: 0;
 }
 
@@ -67,9 +91,13 @@
   border: 0;
   background: none;
   border-radius: var(--radius-art);
+  /* 残りの幅・高さに収まる最大の正方形(カバーは切り抜かない)。1 行目はコンテナ単位の無いブラウザ向け */
   width: min(72vw, 40vh, 440px);
+  width: min(100cqw, 100cqh, 440px);
   aspect-ratio: 1;
   cursor: pointer;
+  /* 2 回タップで保存するので、ダブルタップ拡大と衝突させない */
+  touch-action: manipulation;
   transform: scale(0.97);
   transition: transform 260ms ease;
 }
@@ -100,6 +128,7 @@
   display: grid;
   place-items: center;
   font-size: 96px;
+  font-size: min(96px, 40cqmin);
   color: var(--rose);
   opacity: 0;
   pointer-events: none;
@@ -135,11 +164,25 @@
   background: rgba(20, 18, 28, 0.72);
   color: var(--ink);
   font-size: 12px;
+  white-space: nowrap;
 }
 
 .card-body {
+  /* 位置指定して、transform で後から描かれるカバーの影より上に文字を描く。
+     body コンテナ(横幅)は「もっと / 違う」の表示と曲名の大きさを本文の幅で決めるため */
+  position: relative;
+  container: body / inline-size;
   display: grid;
-  gap: 4px;
+  gap: var(--row-gap);
+  min-width: 0;
+}
+
+/* 理由行 + 曲名(2 行ぶん)。1 行の曲名のときの余りは上(カバーとの間)に回る */
+.card-head {
+  display: grid;
+  gap: var(--row-gap);
+  align-content: end;
+  height: calc(var(--chip-h) + var(--row-gap) + 2 * var(--title-lh));
   min-width: 0;
 }
 
@@ -153,7 +196,7 @@
 
 .card-title {
   margin: 0;
-  font-size: clamp(24px, 6.8vw, 34px);
+  font-size: var(--title-size);
   font-weight: 700;
   line-height: 1.18;
   letter-spacing: -0.01em;
@@ -165,8 +208,10 @@
 }
 
 .card-artist {
-  margin: 2px 0 0;
-  font-size: 17px;
+  margin: 0;
+  height: var(--artist-h);
+  font-size: var(--artist-size);
+  line-height: var(--artist-h);
   color: var(--ink);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -175,7 +220,9 @@
 
 .card-album {
   margin: 0;
+  height: var(--album-h);
   font-size: 13px;
+  line-height: var(--album-h);
   color: var(--ink-3);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -186,12 +233,10 @@
   color: var(--ink-3);
 }
 
+/* 進捗は実物も非アクティブ時の空箱も同じ高さ(アクティブ化で本文の高さ = カバーの大きさを変えない) */
 .progress {
-  margin-top: 12px;
-}
-
-.progress-placeholder {
-  height: 34px;
+  margin-top: var(--progress-gap);
+  height: var(--progress-h);
 }
 
 .progress-track {
@@ -226,17 +271,47 @@
 .progress-time {
   display: flex;
   justify-content: space-between;
+  margin-top: 4px;
   font-size: 11px;
+  line-height: 16px;
   color: var(--ink-3);
-  margin-top: 6px;
   font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
+/* 操作行: 保存 / 追加 / 共有(アイコン + 小ラベル)と「Spotify で開く」を 1 行に。
+   幅が足りない端末(320px や拡大表示)では Spotify のボタンだけが次の行に回って全幅になる */
 .actions {
   display: flex;
-  gap: 8px;
-  margin-top: 14px;
   flex-wrap: wrap;
+  gap: 6px;
+  margin-top: var(--actions-gap);
+}
+
+/* ui.css の .btn より後に効くよう 2 クラスで指定する(feed.css は ui.css より先に読まれる) */
+.actions .btn-action {
+  flex: none;
+  flex-direction: column;
+  justify-content: center;
+  gap: 2px;
+  width: 48px;
+  height: var(--action-h);
+  min-height: 0;
+  padding: 0;
+  border-radius: 14px;
+  font-size: 11px;
+  line-height: 1.2;
+}
+
+.actions .btn-spotify {
+  flex: 1 0 auto;
+  justify-content: center;
+  gap: 6px;
+  height: var(--action-h);
+  min-height: 0;
+  padding: 0 12px;
+  font-size: 13px;
+  white-space: nowrap;
 }
 
 .card-tail {
@@ -259,59 +334,81 @@
   font-weight: 600;
 }
 
-/* 最初の種を待つ間のスケルトン。実カードと同じ寸法にしてレイアウトシフトを避ける(中身は出さない中立の形だけ) */
+/* 最初の種を待つ間のスケルトン。実カードと同じクラスの行を同じ高さで並べ(カバーの大きさも一致する)、
+   中身は出さない中立の形だけ。最初の実カードはアクティブなのでカバーも等倍 */
 .card-skeleton {
   background: var(--ground);
 }
 
 .skeleton-art {
   width: min(72vw, 40vh, 440px);
+  width: min(100cqw, 100cqh, 440px);
   aspect-ratio: 1;
   border-radius: var(--radius-art);
   background: linear-gradient(135deg, var(--surface), var(--surface-2));
   box-shadow: 0 26px 60px rgba(0, 0, 0, 0.35);
-  transform: scale(0.97);
 }
 
-.skeleton-line {
-  display: block;
-  height: 14px;
+.card-skeleton .card-reason {
+  color: var(--ink-3);
+}
+
+/* 行の高さは実物のクラス(.card-title など)が決め、::before が行の中央に棒を描く */
+.skeleton-row {
+  position: relative;
+}
+
+.card-title.skeleton-row {
+  height: var(--title-lh);
+}
+
+.skeleton-row::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 50%;
+  width: var(--bar-w, 60%);
+  height: var(--bar-h, 12px);
+  transform: translateY(-50%);
   border-radius: 7px;
   background: var(--surface-2);
 }
 
-.skeleton-reason {
-  width: 40%;
-  height: 12px;
-  margin-bottom: 8px;
-}
-
 .skeleton-title {
-  width: 78%;
-  height: 26px;
-  margin-bottom: 8px;
+  --bar-w: 78%;
+  --bar-h: calc(var(--title-size) * 0.9);
 }
 
 .skeleton-artist {
-  width: 55%;
-  height: 16px;
-  margin-bottom: 6px;
+  --bar-w: 55%;
+  --bar-h: 15px;
 }
 
 .skeleton-album {
-  width: 62%;
-  height: 12px;
+  --bar-w: 62%;
+  --bar-h: 11px;
 }
 
-.skeleton-caption {
-  margin: 22px 0 0;
-  font-family: var(--font-serif);
-  font-size: 14px;
-  color: var(--ink-3);
+.skeleton-btn {
+  width: 48px;
+  height: var(--action-h);
+  border-radius: 14px;
+  background: var(--surface-2);
+}
+
+/* 実物の「Spotify で開く」とほぼ同じ最小幅にして、折り返す幅も揃える */
+.skeleton-pill {
+  flex: 1 0 auto;
+  min-width: 144px;
+  height: var(--action-h);
+  border-radius: 24px;
+  background: var(--surface-2);
 }
 
 .skeleton-art,
-.skeleton-line {
+.skeleton-row::before,
+.skeleton-btn,
+.skeleton-pill {
   animation: shimmer 1.6s ease-in-out infinite;
 }
 
@@ -357,18 +454,28 @@
   gap: 8px;
 }
 
-/* 開始ゲート */
+/* 開始ゲート。中央寄せは auto マージンで(低い画面ではみ出しても上端が切れず、スクロールで届く) */
 .gate {
   position: fixed;
   inset: 0;
   z-index: 20;
-  display: grid;
-  place-content: center;
-  justify-items: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
   gap: 18px;
-  padding: 24px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: calc(var(--safe-top) + 24px) calc(24px + var(--safe-right)) calc(var(--safe-bottom) + 24px) calc(24px + var(--safe-left));
   background: rgba(20, 18, 28, 0.74);
   text-align: center;
+}
+
+.gate > :first-child {
+  margin-top: auto;
+}
+
+.gate > :last-child {
+  margin-bottom: auto;
 }
 
 .gate-button {
@@ -419,17 +526,18 @@
   color: var(--ink-2);
 }
 
-/* 理由ラベルと「もっと / 違う」 */
+/* 理由ラベルと「もっと / 違う」は 1 行。理由は残りの幅で省略記号 */
 .reason-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  flex-wrap: wrap;
+  height: var(--chip-h);
   min-width: 0;
 }
 
 .reason-row .card-reason {
+  flex: 1 1 auto;
   margin: 0;
   min-width: 0;
   overflow: hidden;
@@ -439,25 +547,92 @@
 
 .feedback-chips {
   display: inline-flex;
+  flex: none;
   gap: 6px;
-  flex-shrink: 0;
 }
 
-.chip-mini {
-  min-height: 26px;
-  padding: 0 10px;
-  border-radius: 13px;
-  font-size: 12px;
+/* ui.css の .chip より後に効くよう 2 クラスで指定する。見た目は 30px、タップ領域は上下に 7px 広げて 44px */
+.chip.chip-mini {
+  position: relative;
+  flex: none;
+  height: var(--chip-h);
+  min-height: 0;
   max-width: none;
+  padding: 0 10px;
+  border-radius: 15px;
+  font-size: 12px;
 }
 
-.chip-mini[aria-pressed='true'] {
+.chip.chip-mini::after {
+  content: '';
+  position: absolute;
+  inset: -7px 0;
+}
+
+.chip.chip-mini[aria-pressed='true'] {
   background: var(--ink);
   border-color: var(--ink);
   color: var(--ground);
 }
 
-.chip-mini:disabled {
+.chip.chip-mini:disabled {
   opacity: 0.9;
   cursor: default;
+}
+
+/* 本文の幅が足りないときは短い表示(読み上げ名は aria-label の元の文言のまま) */
+.chip-label-long {
+  display: none;
+}
+
+@container body (min-width: 440px) {
+  .chip-label-long {
+    display: inline;
+  }
+
+  .chip-label-short {
+    display: none;
+  }
+}
+
+/* ---- 段階: カードの大きさ(card コンテナ)で詰める。同じ変数を上書きするので、後に書いたものが勝つ ---- */
+
+/* 低い画面(iPhone SE の Safari タブ 375×553 など) */
+@container card (max-height: 600px) {
+  .card-content {
+    --pad-bottom: calc(var(--safe-bottom) + 16px);
+    --art-gap: 12px;
+    --row-gap: 3px;
+    --title-size: clamp(22px, 6.6cqi, 28px);
+    --artist-size: 16px;
+    --artist-h: 22px;
+    --progress-gap: 8px;
+    --actions-gap: 10px;
+  }
+}
+
+/* 横向きの低い画面: カバーを左、本文を右の 2 カラム。カバーの列は高さに収まる正方形の幅 */
+@container card (orientation: landscape) and (max-height: 640px) {
+  .card-content {
+    --title-size: 22px;
+    max-width: 960px;
+    grid-template: minmax(0, 1fr) / min(50%, calc(100cqh - var(--pad-top) - var(--pad-bottom))) minmax(0, 1fr);
+    column-gap: 24px;
+  }
+
+  .card-body {
+    align-self: end;
+  }
+}
+
+/* とても低い画面: アルバムと時刻を省く(スケルトンも同じクラスなので一緒に消える) */
+@container card (max-height: 330px) {
+  .card-content {
+    --progress-h: 2px;
+  }
+
+  .card-album,
+  .progress-time {
+    display: none;
+  }
 }

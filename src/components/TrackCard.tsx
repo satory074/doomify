@@ -92,18 +92,24 @@ export function TrackCard({ item, active, snapshot, liked, likeBusy, mark, isMob
         </button>
       </div>
       <div className="card-body">
-        <div className="reason-row">
-          <p className="card-reason">{reasonLabel(item)}</p>
-          <span className="feedback-chips" role="group" aria-label="この曲の手応え">
-            <button type="button" className="chip chip-mini" aria-pressed={mark === 'more'} onClick={onMore} disabled={mark === 'more'}>
-              こういうのをもっと
-            </button>
-            <button type="button" className="chip chip-mini" aria-pressed={mark === 'less'} onClick={onLess} disabled={mark === 'less'}>
-              これは違う
-            </button>
-          </span>
+        {/* 理由行 + 曲名(2 行ぶんの枠)。本文の高さ = カバーの大きさを曲ごとに揺らさない */}
+        <div className="card-head">
+          <div className="reason-row">
+            <p className="card-reason">{reasonLabel(item)}</p>
+            <span className="feedback-chips" role="group" aria-label="この曲の手応え">
+              {/* 表示は本文の幅で短い/長いを切り替え(CSS)、読み上げ名は常に元の文言 */}
+              <button type="button" className="chip chip-mini" aria-label="こういうのをもっと" aria-pressed={mark === 'more'} onClick={onMore} disabled={mark === 'more'}>
+                <span className="chip-label-short">もっと</span>
+                <span className="chip-label-long">こういうのをもっと</span>
+              </button>
+              <button type="button" className="chip chip-mini" aria-label="これは違う" aria-pressed={mark === 'less'} onClick={onLess} disabled={mark === 'less'}>
+                <span className="chip-label-short">違う</span>
+                <span className="chip-label-long">これは違う</span>
+              </button>
+            </span>
+          </div>
+          <h2 className="card-title">{track.name}</h2>
         </div>
-        <h2 className="card-title">{track.name}</h2>
         <p className="card-artist">{formatArtists(track)}</p>
         <p className="card-album">
           {track.album.name}

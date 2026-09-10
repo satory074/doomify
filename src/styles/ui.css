@@ -119,17 +119,27 @@
     margin: auto;
     max-width: 520px;
     border-radius: 20px;
-    max-height: min(85vh, 760px);
+    max-height: min(calc(100% - 48px), 760px);
   }
 }
 
+/* 開いているときだけ flex(閉じた dialog に display を当てると表示されてしまう)。
+   dialog 自体はスクロールさせず、本文だけをスクロールして見出し(閉じる)を残す */
+.sheet[open] {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
 .sheet-inner {
-  display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
-  max-height: inherit;
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
 }
 
 .sheet-head {
+  flex: none;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -143,7 +153,10 @@
 }
 
 .sheet-body {
+  flex: 1 1 auto;
+  min-height: 0;
   overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 0 20px calc(20px + var(--safe-bottom));
   display: grid;
   gap: 18px;
@@ -277,16 +290,24 @@
   color: var(--ink-3);
 }
 
+/* 上部の重ね表示(更新バナー + トースト)。上部バーのすぐ下に積み、操作行・ホームインジケータ・iOS のツールバーを避ける */
+.overlay-top {
+  position: fixed;
+  z-index: 30;
+  top: calc(var(--safe-top) + 60px);
+  left: calc(var(--safe-left) + 12px);
+  right: calc(var(--safe-right) + 12px);
+  display: grid;
+  justify-items: center;
+  gap: 8px;
+  pointer-events: none;
+}
+
 /* トースト */
 .toasts {
-  position: fixed;
-  left: 50%;
-  bottom: calc(var(--safe-bottom) + 16px);
-  transform: translateX(-50%);
-  z-index: 30;
   display: grid;
   gap: 8px;
-  width: min(92vw, 480px);
+  width: min(100%, 480px);
   pointer-events: none;
 }
 
@@ -315,35 +336,45 @@
 }
 
 .update-banner {
-  position: fixed;
-  top: calc(var(--safe-top) + 56px);
-  left: 50%;
-  transform: translateX(-50%);
-  z-index: 30;
   display: flex;
+  flex-wrap: wrap;
   gap: 10px;
   align-items: center;
+  max-width: 100%;
   padding: 10px 14px;
   border-radius: 14px;
   background: var(--accent);
   color: var(--ground);
   font-size: 13px;
+  pointer-events: auto;
 }
 
-/* ログイン画面 */
+/* ログイン画面。中央寄せは auto マージンで(スクロール領域の align-content: center は、はみ出した上端が切れて戻せない) */
 .login {
   min-height: 100%;
   height: 100%;
   overflow-y: auto;
-  display: grid;
-  align-content: center;
+  display: flex;
+  flex-direction: column;
   gap: 18px;
-  padding: calc(var(--safe-top) + 32px) 24px calc(var(--safe-bottom) + 32px);
+  padding: calc(var(--safe-top) + 32px) calc(24px + var(--safe-right)) calc(var(--safe-bottom) + 32px) calc(24px + var(--safe-left));
   max-width: 480px;
   margin: 0 auto;
   background:
     radial-gradient(70% 45% at 50% 18%, rgba(143, 134, 255, 0.28), transparent 70%),
     var(--ground);
+}
+
+.login > :first-child {
+  margin-top: auto;
+}
+
+.login > :last-child {
+  margin-bottom: auto;
+}
+
+.login > .spinner {
+  align-self: center;
 }
 
 .login-stack {

@@ -15,12 +15,14 @@ interface Props {
   onOpen: () => void;
 }
 
+/** 操作行。保存 / 追加 / 共有はアイコン + 小ラベル(幅 48px)、「Spotify で開く」はロゴと文言のまま残りの幅いっぱい */
 export function CardActions({ track, liked, busy, isMobile, onLike, onAddToPlaylist, onShare, onOpen }: Props) {
   const openUrl = SPOTIFY_TRACK_URL(track.id);
   return (
     <div className="actions">
-      <button type="button" className="btn" aria-pressed={liked} onClick={onLike} disabled={busy}>
-        <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true">
+      {/* トグルは状態でラベルを変えない(幅も読み上げ名も一定)。状態は aria-pressed と塗りのハートで示す */}
+      <button type="button" className="btn btn-action" aria-pressed={liked} onClick={onLike} disabled={busy}>
+        <svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true">
           <path
             fill={liked ? 'currentColor' : 'none'}
             stroke="currentColor"
@@ -28,19 +30,19 @@ export function CardActions({ track, liked, busy, isMobile, onLike, onAddToPlayl
             d="M12 21s-7.5-4.6-9.5-9A5.4 5.4 0 0 1 12 6.3 5.4 5.4 0 0 1 21.5 12c-2 4.4-9.5 9-9.5 9z"
           />
         </svg>
-        {liked ? '保存済み' : '保存'}
+        <span>保存</span>
       </button>
-      <button type="button" className="btn" onClick={onAddToPlaylist}>
-        <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true">
+      <button type="button" className="btn btn-action" aria-label="プレイリストに追加" onClick={onAddToPlaylist}>
+        <svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true">
           <path fill="currentColor" d="M3 6h12v2H3zm0 4h12v2H3zm0 4h8v2H3zm14 0v-3h2v3h3v2h-3v3h-2v-3h-3v-2z" />
         </svg>
-        プレイリストへ
+        <span>追加</span>
       </button>
-      <button type="button" className="btn" onClick={onShare}>
-        <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true">
+      <button type="button" className="btn btn-action" onClick={onShare}>
+        <svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true">
           <path fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" d="M12 3v12M7 8l5-5 5 5M5 14v5a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-5" />
         </svg>
-        共有
+        <span>共有</span>
       </button>
       <a
         className="btn btn-spotify"
@@ -57,8 +59,8 @@ export function CardActions({ track, liked, busy, isMobile, onLike, onAddToPlayl
           window.location.href = SPOTIFY_TRACK_DEEPLINK(track.id);
         }}
       >
-        <SpotifyIcon size={21} />
-        Spotify で開く
+        <SpotifyIcon size={21} decorative />
+        <span>Spotify で開く</span>
       </a>
     </div>
   );

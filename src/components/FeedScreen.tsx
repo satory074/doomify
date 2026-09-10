@@ -504,8 +504,11 @@ export function FeedScreen({ services, settings, updateSettings, authStatus, onL
         onLogout={onLogout}
         onClose={() => setSettingsOpen(false)}
       />
-      <ToastStack toasts={toasts} onDismiss={dismiss} />
-      <UpdatePrompt />
+      {/* 更新バナーとトーストは上部バーのすぐ下に積む(操作行・ホームインジケータ・ブラウザのツールバーを避ける) */}
+      <div className="overlay-top">
+        <UpdatePrompt />
+        <ToastStack toasts={toasts} onDismiss={dismiss} />
+      </div>
     </div>
   );
 }

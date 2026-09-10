@@ -34,7 +34,7 @@ export function LoginScreen({ state, onLogin }: Props) {
       ) : null}
       {state.message !== null ? <div className="notice notice-error">{state.message}</div> : null}
       <button type="button" className="btn btn-primary btn-login" onClick={onLogin} disabled={missingClientId}>
-        <SpotifyIcon size={22} color="#0b0b12" />
+        <SpotifyIcon size={22} color="#0b0b12" decorative />
         Spotify でログイン
       </button>
       <ul className="login-notes">

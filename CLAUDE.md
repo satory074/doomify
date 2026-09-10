@@ -53,8 +53,8 @@ npm run preview  # PWA/SW の動作確認
   確定は `scrollend` + 幾何、無ければ scroll アイドル 150ms。確定が意図と食い違えば意図を出し直す。ResizeObserver で再整列)、`useSettings`、`useCoverPalette`、`useMediaSession`、`useKeyboardNav`
 - **`src/components/`** — `FeedScreen`(配線の中心。離脱 → `markLeft`(滞在 `dwellMs`・`startMs`・`positionMs` 付き)、戻り → `markReturned`、いいね/プレイリスト/共有/開く/もっと/違う → `mark*`。
   画面が隠れる/閉じるときは現在カードの離脱を記録して `flush`)、`Feed`(殻は全部・中身は active ±2)、
-  `CardShell`/`TrackCard`(理由ラベル + 「こういうのをもっと / これは違う」)/`CardActions`(保存 / プレイリストへ / 共有(Web Share API → リンクコピー)/ Spotify で開く)、`TapToStartGate`、`TopBar`、
-  `DevicePicker`、`PlaylistPicker`、`SettingsSheet`(発見度・外部データのトグル・自動ジャンル・「発見の様子」診断: セッション・枠・反応率・試験・落とした候補)、`Modal`(`<dialog>`)、`Toast`、`UpdatePrompt`(SW は prompt 更新)、`SpotifyMark`(帰属)
+  `CardShell`/`TrackCard`(理由ラベル + 「こういうのをもっと / これは違う」)/`CardActions`(保存 / 追加(プレイリスト)/ 共有(Web Share API → リンクコピー)はアイコン + 小ラベルの 48px、「Spotify で開く」はロゴ + 文言で残りの幅)、`TapToStartGate`、`TopBar`、
+  `DevicePicker`、`PlaylistPicker`、`SettingsSheet`(発見度・外部データのトグル・自動ジャンル・「発見の様子」診断: セッション・枠・反応率・試験・落とした候補)、`Modal`(`<dialog>`)、`Toast`・`UpdatePrompt`(SW は prompt 更新。どちらも上部バー直下の `.overlay-top` に積む)、`SpotifyMark`(帰属)
 - **`src/services.ts`** — auth / client / api / store / history / external(MusicBrainz・ListenBrainz クライアント)のシングルトン
 
 ## 設計上の約束
@@ -77,6 +77,10 @@ npm run preview  # PWA/SW の動作確認
   開発ビルドでは `window.__doomify.timing()` / console の `[doomify] … intent→issued` で意図 → 要求 → 受理 → 発音の遅延を確認できる
 - **自動再生制限**: 音を出す前に必ずユーザーのタップ(`TapToStartGate`)。`target.activate()` は await の前に同期で呼ぶ
 - **document はスクロールさせない**(`.feed` が fixed の唯一のスクローラ)。`100vh/100dvh` は使わず `height:100%`
+- **カードは 1 画面に収める**(`feed.css`): `.card` はサイズコンテナ `card`。カバーは `.card-art-wrap`(コンテナ `art`)の `min(100cqw, 100cqh, 440px)` = 本文を置いた残りに収まる最大の正方形(切り抜かない)。
+  本文の各行は高さを変数で明示(`--chip-h` `--title-lh` `--artist-h` `--progress-h` `--action-h` など)し、曲名は 2 行ぶんの枠(`.card-head`)を常に取る → カバーの大きさは曲名の長さ・アクティブ化・スケルトンで変わらない。
+  段階は `@container card`: 高さ ≤600px で詰める / 横向きかつ ≤640px は 2 カラム / ≤330px でアルバムと時刻を省く。「もっと / 違う」の長い表示は `@container body (min-width: 440px)` のときだけ(読み上げ名は常に元の文言)。
+  トースト・更新バナーは `.overlay-top`(上部バー直下)。画面下は操作行とブラウザのツールバー・ホームインジケータがあるので置かない
 - **items は追記専用**(先頭削除は scrollTop ジャンプ)。上限 500 で「続きを読み込む」
 - **Spotify ポリシー**: カバーアートは無加工(角丸のみ)、メタデータは提供どおり、常に「Spotify で開く」+ ロゴ。ビート同期演出・クロスフェード禁止。Spotify グリーンはロゴ/CTA のみ
 
@@ -103,6 +107,11 @@ npm run preview  # PWA/SW の動作確認
   評価で恒久的に落ちた候補(既視・重複・避ける・既知・除外タグ)はその場でプールから捨てる(間隔・くじ引き連続・試験上限は一時的なので残す)
 - `history` v3 は `actions`(行動計数)・`trials`・`session` を持つ。`migrateHistory` は v1/v2/v3 を受け、無いフィールドは既定値で埋める
 - 抽選(`draw`)は乱数の消費順が学習状態で変わるので、seed 固定のテストは「何が出るか」ではなく性質(枠・間隔・比率)を検証する
+- `feed.css` は `ui.css` より先に読まれる → カード内で `.btn` / `.chip` を上書きするときは 2 クラスで(`.actions .btn-action`、`.chip.chip-mini`)。1 クラスだと ui.css に負ける
+- `.card-art-wrap` はサイズコンテナで自然な大きさが 0 → `align-self/justify-self: stretch` を外さない(中央寄せにするとカバーが 0px になる)。カバーは transform で後から描かれるので `.card-body` は `position: relative`(影が文字に被らない)
+- `<dialog>` シートの `display: flex` は `.sheet[open]` にだけ当てる(閉じた dialog に display を当てると表示される)。dialog 自体はスクロールさせず `.sheet-body` だけ
+- スクロール領域の中央寄せは auto マージン(`.login` / `.gate`)。`align-content: center` ははみ出した上端が切れてスクロールでも戻せない
+- レイアウトの実測は headless Chrome を CDP で(`Emulation.setDeviceMetricsOverride` + `setSafeAreaInsetsOverride` で安全域も再現)。iOS 26 Safari のツールバーはエミュレーションでは再現できないので実機でも確認する
 
 ## Deploy
 
